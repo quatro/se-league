@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SE Baseball League</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700;800&family=Public+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="gate" hidden></div>
+
+<div class="wrap" id="app" hidden>
+  <header class="top">
+    <h1><small id="league">SE Baseball</small><span id="seasonTitle">League</span></h1>
+    <div class="navr">
+      <div class="tools"><span id="live"></span><label class="seasonsel" for="seasonSel">Season <select id="seasonSel"></select></label></div>
+      <div class="who-am-i" id="whoami"></div>
+      <div class="tabs" role="tablist" id="tabs">
+        <button role="tab" data-tab="seats" aria-selected="true">Seats</button>
+        <button role="tab" data-tab="drafts" aria-selected="false">Drafts</button>
+        <button role="tab" data-tab="kids" aria-selected="false" data-admin hidden>Kids</button>
+        <button role="tab" data-tab="regs" aria-selected="false" data-admin hidden>Registrations<span class="badge" id="regBadge" hidden></span></button>
+        <button role="tab" data-tab="divisions" aria-selected="false" data-admin hidden>Divisions &amp; Teams</button>
+        <button role="tab" data-tab="seasons" aria-selected="false" data-admin hidden>Seasons</button>
+        <button role="tab" data-tab="log" aria-selected="false" data-admin hidden>Activity</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- SEATS -->
+  <section id="view-seats" class="overview">
+    <div class="headline" id="headline" aria-live="polite"><div class="meta">Loading…</div></div>
+    <div class="divs" id="divs"></div>
+    <div class="row">
+      <div class="totals" id="totals"></div><span class="spacer"></span>
+      <div class="legend"><span><i class="dot Registered"></i>Registered</span><span><i class="dot Expected"></i>Returner expected</span><span><i class="dot Need"></i>Returner — need to contact</span><span><i class="dot"></i>Open</span></div>
+      <a class="btn" id="capCsv" href="#">Download (CSV)</a>
+    </div>
+  </section>
+
+  <!-- DRAFTS -->
+  <section id="view-drafts" hidden>
+    <div class="drafts" id="draftCards"></div>
+  </section>
+
+  <!-- KIDS (admin) -->
+  <section id="view-kids" hidden>
+    <div class="panel">
+      <div class="hd"><h2>Kids</h2>
+        <div class="row">
+          <input type="search" id="kSearch" placeholder="Search" style="width:160px" aria-label="Search kids">
+          <select id="kDiv" style="width:auto" aria-label="Division"></select>
+          <select id="kStatus" style="width:auto" aria-label="Status"></select>
+          <select id="kKind" style="width:auto" aria-label="Returner or new"><option value="">Returners &amp; new</option><option value="1">Returners</option><option value="0">New</option></select>
+          <label class="row" style="gap:4px;font-weight:500;white-space:nowrap"><input type="checkbox" id="kTry"> Trying out</label>
+          <label class="row" style="gap:4px;font-weight:500;white-space:nowrap"><input type="checkbox" id="kMismatch"> Age doesn't fit</label>
+          <button class="btn" id="addKid">Add kid</button>
+          <a class="btn" id="kidsCsv" href="#">CSV</a>
+        </div>
+      </div>
+      <div class="bd">
+        <p class="note">Edits save as you leave each field. Tick kids and use <b>Move to</b> to put them in another division; a move made here is <b>pinned</b> so a SportsEngine registration won't undo it. <b>Trying out</b> puts a kid in the Majors draft pool; a Minors returner who tries out gives up their Minors team and, if not drafted, goes into the Minors draft. Click a name for that kid's history across seasons.</p>
+        <div class="scroll"><table class="kt" id="kTable"></table></div>
+        <div class="movebar" id="moveBar" hidden>
+          <b id="moveCount"></b>
+          <label for="moveTo">Move to</label><select id="moveTo"></select>
+          <input type="text" id="moveReason" placeholder="Reason (optional)" style="width:200px" aria-label="Reason">
+          <button class="btn" id="moveGo">Move</button>
+          <button class="btn" id="moveClear">Clear</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- REGISTRATIONS (admin) -->
+  <section id="view-regs" class="grid2" hidden>
+    <div class="panel wide">
+      <div class="hd"><h2>Registration inbox</h2>
+        <div class="row">
+          <select id="regFilter" style="width:auto" aria-label="Filter">
+            <option value="open">Needs attention</option><option value="placed">New kids placed</option><option value="returner">Returners registered</option>
+            <option value="withdrawn">Withdrawn</option><option value="wrong_year">Other seasons</option><option value="ignored">Ignored</option><option value="all">All</option>
+          </select>
+          <button class="btn" id="regReprocess">Re-run placement on open items</button>
+        </div>
+      </div>
+      <div class="bd">
+        <div class="row" id="regCounts"></div>
+        <div class="scroll"><table class="kt" id="regTable"></table></div>
+      </div>
+    </div>
+    <div class="panel"><div class="hd"><h2>SportsEngine webhook</h2></div><div class="bd" id="whInfo"></div></div>
+    <div class="panel"><div class="hd"><h2>Import registration report</h2></div><div class="bd">
+      <p class="note">Until the webhook is live, export the registration report from SportsEngine HQ as CSV and drop it here. Needs <b>First Name</b>, <b>Last Name</b> and the <b>program</b> column; <b>Date of Birth</b> and <b>Season</b> help. Each row is placed the same way a webhook is.</p>
+      <input type="file" id="regFile" accept=".csv,text/csv">
+      <textarea id="regCsv" rows="4" placeholder="…or paste CSV here"></textarea>
+      <div class="row"><button class="btn primary" id="regImport">Import</button></div>
+    </div></div>
+    <div class="panel"><div class="hd"><h2>Record one registration</h2></div><div class="bd">
+      <p class="note">For a paper form, or to test placement.</p>
+      <div class="row"><input type="text" id="mFirst" placeholder="First name" style="flex:1"><input type="text" id="mLast" placeholder="Last name" style="flex:1"></div>
+      <div class="row"><input type="date" id="mDob" style="flex:1" aria-label="Birthdate"><input type="text" id="mProgram" placeholder="Program (e.g. Major/Minor)" style="flex:1" aria-label="Program"></div>
+      <div class="row"><button class="btn primary" id="mSave">Record</button></div>
+    </div></div>
+  </section>
+
+  <!-- DIVISIONS & TEAMS (admin) -->
+  <section id="view-divisions" class="grid2" hidden>
+    <div class="panel wide">
+      <div class="hd"><h2>Divisions</h2><button class="btn primary" id="addDiv">Add division</button></div>
+      <div class="bd">
+        <p class="note"><b>Teams</b> comes from field slots and coaches; seats = teams × roster. <b>SE words</b> are matched against the program a family picks in SportsEngine (<code>-</code> = nobody registers here directly, e.g. Majors). Divisions with the same <b>Group</b> share one registration program and are counted together (Majors + Minors). <b>Keep teams</b> sends last season's players back to the same team. <b>Draft</b> sets up that division's draft room.</p>
+        <div class="scroll"><table class="kt" id="divTable"></table></div>
+      </div>
+    </div>
+    <div class="panel wide"><div class="hd"><h2>Teams &amp; records</h2></div><div class="bd">
+      <p class="note">Records feed next season's draft order (“Order by last season's records” in a draft room puts the worst record first) and each kid's history.</p>
+      <div id="teamLists" class="grid2"></div>
+    </div></div>
+    <div class="panel"><div class="hd"><h2>Paste rosters</h2></div><div class="bd">
+      <p class="note">Rosters for <b id="rosterSeason"></b>: a header row with <b>Name</b> (or First / Last), <b>Birthdate</b> or <b>Age</b>, <b>Division</b>, <b>Team</b>. Kids are matched to their existing record by name and birthdate, so each child keeps one history. For a finished season they're recorded as having played, and carried into the next season as returners.</p>
+      <textarea id="rosterBox" rows="7" placeholder="Name,Birthdate,Division,Team&#10;Jamie Smith,2016-05-02,Minors,Tigers"></textarea>
+      <div class="row"><label for="rosterDefault" style="min-width:0">If no division given</label><select id="rosterDefault" style="width:auto"></select><button class="btn primary" id="rosterImport">Add rosters</button></div>
+    </div></div>
+    <div class="panel"><div class="hd"><h2>Season settings</h2></div><div class="bd">
+      <div class="row"><label for="ageCutoff">League age date</label><input type="text" id="ageCutoff" style="width:100px" placeholder="MM-DD"></div>
+      <p class="note">League age is a kid's age on this month-day of the season year (04-30 = “turns 5 or 6 before May 1”).</p>
+      <div class="row"><label for="warnAt">“Closing soon” at</label><input type="number" id="warnAt" min="0" max="50" style="width:100px"><span class="note">open seats or fewer</span></div>
+    </div></div>
+  </section>
+
+  <!-- SEASONS (admin) -->
+  <section id="view-seasons" class="grid2" hidden>
+    <div class="panel"><div class="hd"><h2>Seasons</h2></div><div class="bd">
+      <table class="kt" id="seasonTable"></table>
+      <div class="row"><input type="number" id="newYear" placeholder="Year" style="width:100px" aria-label="Year"><button class="btn" id="addSeason">Add an earlier season</button></div>
+      <p class="note">Add an earlier season only to record history (paste its rosters on Divisions &amp; Teams). New seasons come from finishing the current one.</p>
+    </div></div>
+    <div class="panel"><div class="hd"><h2 id="rollTitle">Finish the season</h2></div><div class="bd" id="rollBox"></div></div>
+  </section>
+
+  <!-- ACTIVITY (admin) -->
+  <section id="view-log" hidden>
+    <div class="panel"><div class="hd"><h2>Activity</h2><button class="btn" id="logRefresh">Refresh</button></div>
+      <div class="bd"><div class="scroll"><table class="kt" id="logTable"></table></div></div></div>
+  </section>
+</div>
+
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast" hidden></div>
+<script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Draft Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700;800&family=Public+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="gate" hidden></div>
+
+<div class="wrap" id="app" hidden>
+  <header class="top">
+    <h1><small id="season">SE Baseball</small><span id="title">Draft Room</span></h1>
+    <div class="navr">
+      <div class="who-am-i" id="tools"></div>
+      <div class="who-am-i" id="whoami"></div>
+      <div class="tabs" role="tablist" id="tabs">
+        <button role="tab" data-tab="board" aria-selected="true">Board</button>
+        <button role="tab" data-tab="teams" aria-selected="false">Rosters</button>
+        <button role="tab" data-tab="setup" aria-selected="false" data-admin hidden>Setup</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="banner" id="blocked" hidden></div>
+  <section class="clock" id="clock" aria-live="polite"><div class="meta">Loading the draft…</div></section>
+  <div class="warnbox" id="orphanWarn" hidden></div>
+
+  <!-- BOARD -->
+  <section id="view-board" class="main">
+    <div class="panel">
+      <div class="hd"><h2>Draft board</h2><div class="legend" id="legend">
+        <span><i class="dot Registered"></i>Registered</span><span><i class="dot Expected"></i>Expected</span>
+        <span><i class="dot Need"></i>Need to contact</span><span><i class="dot Not-returning"></i>Not returning</span></div></div>
+      <div class="scroll"><table class="board" id="board"></table></div>
+    </div>
+    <aside class="panel" id="poolPanel">
+      <div class="hd"><h2 id="poolTitle">Available</h2><span class="chip" id="poolCount">0</span></div>
+      <div class="pool-tools" id="poolTools">
+        <input type="search" id="poolSearch" placeholder="Search players" aria-label="Search players">
+        <div class="row" style="flex-wrap:nowrap">
+          <select id="poolAge" aria-label="Filter by age"><option value="">All ages</option></select>
+          <label class="row" style="min-width:0;font-weight:500;gap:4px;white-space:nowrap"><input type="checkbox" id="showTaken"> Show drafted</label>
+        </div>
+      </div>
+      <ul class="pool" id="pool"></ul>
+      <div class="numbers" id="numbers" hidden></div>
+    </aside>
+  </section>
+
+  <!-- ROSTERS -->
+  <section id="view-teams" hidden>
+    <div class="row" style="margin-bottom:12px"><a class="btn" id="rostersCsv" href="#">Download rosters (CSV)</a></div>
+    <div class="teams" id="teams"></div>
+  </section>
+
+  <!-- SETUP (admin) -->
+  <section id="view-setup" class="grid2" hidden>
+    <div class="panel"><div class="hd"><h2>Draft settings</h2></div><div class="bd">
+      <div class="row"><label for="format">Format</label><select id="format" style="width:auto"><option value="standard">Standard — pick players by name</option><option value="blind">Blind — pick hidden numbers</option></select></div>
+      <div class="row"><label for="mode">Order each round</label><select id="mode" style="width:auto"><option value="straight">Same every round</option><option value="snake">Snake (reverse even rounds)</option></select></div>
+      <div class="row"><label>Coin-flip pair</label><select id="swapA" style="width:auto" aria-label="First team of pair"></select><select id="swapB" style="width:auto" aria-label="Second team of pair"></select></div>
+      <p class="note">The coin-flip pair swaps places every other round. Each team picks until its roster is full, so teams that lost more returners get extra (compensation) picks in later rounds.</p>
+      <p class="note" id="flowNote"></p>
+    </div></div>
+
+    <div class="panel"><div class="hd"><h2>Round 1 order &amp; teams</h2><div class="row"><button class="btn" id="byRecord">Order by last season's records</button><button class="btn" id="addTeam">Add team</button></div></div><div class="bd">
+      <ol class="order" id="order"></ol>
+      <p class="note">“Order by last season's records” puts the worst record first, matching teams to last season by name. Enter records on the league site's Divisions tab.</p>
+    </div></div>
+
+    <div class="panel" id="numbersPanel" hidden><div class="hd"><h2>Hidden numbers</h2></div><div class="bd">
+      <p class="note" id="numbersNote"></p>
+      <div class="row"><button class="btn primary" id="assignNumbers">Hand out numbers</button><button class="btn" id="clearNumbers">Reshuffle all</button></div>
+    </div></div>
+
+    <div class="panel"><div class="hd"><h2>Draft controls</h2></div><div class="bd">
+      <div class="row"><button class="btn" id="undo">Undo last pick</button><button class="btn" id="restartClock">Restart clock</button></div>
+      <div class="row"><button class="btn primary" id="closeDraft">Close draft</button><button class="btn" id="reopenDraft">Reopen draft</button></div>
+      <p class="note" id="closeNote"></p>
+      <div class="row"><input type="text" id="clearConfirm" placeholder="Type CLEAR" style="width:130px" aria-label="Type CLEAR to confirm"><button class="btn danger" id="reset">Clear all picks</button></div>
+      <p class="note">Click any made pick on the board to swap the player or remove that one pick. Kids, statuses and tryouts are managed on the league site.</p>
+    </div></div>
+  </section>
+</div>
+
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast" hidden></div>
+<script src="/js/draft.js"></script>
+</body>
+</html>
