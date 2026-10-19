@@ -68,6 +68,7 @@ function render() {
   if (S.tab === 'seasons') renderSeasons();
   if (S.tab === 'log') renderLog();
   if (S.tab === 'campaigns') loadCampaigns(); // campaigns.js
+  if (S.tab === 'outreach' && OS.loadedFor !== S.sid) loadOutreach(); // outreach.js — reloads on tab open, not on every change, so a message being typed survives
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (S.pendingRender && !document.activeElement?.closest?.('section')) { S.pendingRender = false; render(); } }, 0));
 $('seasonSel').onchange = (e) => { S.sid = e.target.value; S.sel.clear(); try { localStorage.setItem('league-season', S.sid); } catch { /* private */ } refresh(); if (S.tab === 'log') loadLog(); };
@@ -174,12 +175,23 @@ async function showKid(kidId) {
     <div class="row"><label for="kfDob">Birthdate</label><input type="date" id="kfDob" value="${esc(k.birthdate || '')}" style="width:auto">${k.se_profile_id ? `<span class="sub">SE id <code>${esc(k.se_profile_id)}</code></span>` : ''}</div>
     <label class="note" for="kfNotes">Notes that follow this kid every season (admins only)</label><textarea id="kfNotes" rows="2">${esc(k.notes)}</textarea>
     <div class="row"><button class="btn primary" type="submit">Save</button></div>
+    <h3>Parents &amp; guardians</h3>
+    ${h.contacts.length ? `<table class="kt">${h.contacts.map((c) => `<tr><td><b>${esc(c.name || '—')}</b>${c.relation ? ` <span class="sub">${esc(c.relation)}</span>` : ''}</td><td>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</td><td>${esc(c.phone)}</td><td class="sub">${esc(c.source)}</td><td><button class="mini" type="button" data-delcontact="${esc(c.id)}">Remove</button></td></tr>`).join('')}</table>` : '<p class="note">No parent contact on file — returning-player emails can’t reach this family yet.</p>'}
+    <div class="row"><input type="text" id="kcName" placeholder="Parent name" style="flex:1" aria-label="Parent name"><input type="email" id="kcEmail" placeholder="Email" style="flex:1" aria-label="Email"><input type="tel" id="kcPhone" placeholder="Phone" style="width:130px" aria-label="Phone"><button class="btn" type="button" id="kcAdd">Add contact</button></div>
     <h3>Seasons</h3>
     <table class="hist"><tr><th>Season</th><th>Age</th><th>Division</th><th>Team</th><th>Record</th><th>How</th><th>Status</th></tr>
     ${h.seasons.map((s) => `<tr><td>${s.year}</td><td>${esc(s.age ?? '')}</td><td>${esc(s.division || '—')}</td><td>${esc(s.team || '—')}</td><td>${esc(s.record || '')}</td><td>${esc(s.how)}</td><td><i class="dot ${dotCls(s.status)}"></i> ${esc(s.status)}</td></tr>`).join('')}</table>
     ${h.registrations.length ? `<h3>Registrations</h3><table class="kt">${h.registrations.map((r) => `<tr><td>${esc(r.received_at)}</td><td>${esc(r.season_id || '')}</td><td>${esc(r.program || '')}</td><td>${esc(r.outcome)}</td><td>${esc(r.note)}</td></tr>`).join('')}</table>` : ''}
     <h3>History</h3>${h.audit.length ? `<table class="kt">${h.audit.map((a) => `<tr><td>${esc(a.at)}</td><td>${esc(a.season_id || '')}</td><td>${esc(a.actor)}</td><td>${esc(a.action.replace(/_/g, ' '))}</td><td class="mono">${esc(a.detail)}</td></tr>`).join('')}</table>` : '<p class="note">No changes recorded.</p>'}
     <div class="row"><span class="spacer"></span><button class="btn" data-close>Close</button></div></form>`, (d) => {
+    d.querySelector('#kcAdd').onclick = async () => {
+      const v = (id) => d.querySelector(id).value.trim();
+      if (await act('POST', `/api/admin/kids/${encodeURIComponent(kidId)}/contacts`, { name: v('#kcName'), email: v('#kcEmail'), phone: v('#kcPhone') })) { d.close(); showKid(kidId); }
+    };
+    d.querySelectorAll('[data-delcontact]').forEach((b) => (b.onclick = async () => {
+      if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Remove?'; return; }
+      if (await act('DELETE', `/api/admin/contacts/${encodeURIComponent(b.dataset.delcontact)}`, undefined, 'Removed')) { d.close(); showKid(kidId); }
+    }));
     d.querySelector('#kf').onsubmit = async (e) => {
       e.preventDefault();
       if (await act('PATCH', `/api/admin/kids/${encodeURIComponent(kidId)}`, { name: d.querySelector('#kfName').value, birthdate: d.querySelector('#kfDob').value || null, notes: d.querySelector('#kfNotes').value }, 'Saved')) d.close();
@@ -514,7 +526,7 @@ $('logRefresh').onclick = loadLog;
 $('logTable').onclick = (e) => { const kb = e.target.closest('[data-kid]'); if (kb) showKid(kb.dataset.kid); };
 
 /* ---------- tabs ---------- */
-const VIEWS = ['seats', 'drafts', 'kids', 'campaigns', 'regs', 'divisions', 'seasons', 'log'];
+const VIEWS = ['seats', 'drafts', 'kids', 'campaigns', 'outreach', 'regs', 'divisions', 'seasons', 'log'];
 function setTab(t) {
   const btn = document.querySelector(`[data-tab="${t}"]`);
   if (!btn || (btn.hasAttribute('data-admin') && !isAdmin())) t = 'seats';
@@ -524,6 +536,7 @@ function setTab(t) {
   try { localStorage.setItem('league-tab', t); } catch { /* private mode */ }
   if (t === 'regs') loadRegs();
   if (t === 'log') loadLog();
+  if (t === 'outreach') OS.loadedFor = null;
   render();
 }
 document.querySelectorAll('#tabs button').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));

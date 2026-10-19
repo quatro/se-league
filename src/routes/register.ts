@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { config } from '../config.js'
 import { requireAdmin, throttled, noteFailure } from '../lib/auth.js'
 import * as C from '../lib/campaigns.js'
+import * as O from '../lib/outreach.js'
 import { UserError } from '../lib/league.js'
 import { verifyStripeSignature } from '../lib/stripe.js'
 
@@ -57,6 +58,13 @@ register.get('/api/register/:slug/returning', wrap((req, res) => {
   if (!c || (c.status === 'draft' && !req.admin)) throw new UserError('No registration here')
   const q = (k: string) => String(req.query[k] ?? '').slice(0, 80)
   return { matches: C.returningMatches(c, q('first'), q('last'), q('dob')) }
+}))
+
+// A personal link from an outreach email: pre-fill the form for that family.
+register.get('/api/register/:slug/invite/:token', wrap((req) => {
+  const c = C.campaignBySlug(p(req, 'slug'))
+  if (!c || (c.status === 'draft' && !req.admin)) throw new UserError('No registration here')
+  return O.invite(p(req, 'slug'), p(req, 'token').slice(0, 64))
 }))
 
 const answer = z.union([z.string().max(4000), z.number(), z.boolean(), z.array(z.string().max(200)).max(50), z.null()])

@@ -149,3 +149,19 @@ To set up Stripe:
 
 To go live, swap in the `sk_live_…` key and repeat steps 2 and 3. Test-mode
 orders are labelled "test".
+
+## Outreach: asking returning families to register early
+
+**Outreach** emails the parents of returning players (Expected / Need to
+contact) in chosen divisions. Each parent email gets one message covering all
+of their kids, with a personal link (`/register/<slug>?invite=…`) that fills in
+the form; the form still asks them to confirm each returning player. Kids
+already Registered are never emailed, so sending again later is a reminder to
+whoever hasn't signed up. The Sent list shows who clicked and how many kids
+have registered since.
+
+Parent contacts live on each kid's record (click a name). Paste a contact list
+or the SportsEngine parent export on the Outreach tab; every paid registration
+adds the parent too. Email goes out through Resend (`RESEND_API_KEY`,
+`MAIL_FROM` with a verified domain). Without it, **Export list with personal
+links** gives a CSV for sending from another tool.

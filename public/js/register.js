@@ -231,6 +231,16 @@ async function showDone() {
   $('familySec').hidden = !fam.length;
   let draft = null;
   try { draft = JSON.parse(localStorage.getItem(DRAFT) || 'null'); } catch { /* private */ }
+  // A personal link from a returning-player email fills in the family and their players.
+  if (qs.get('invite')) {
+    try {
+      const inv = await call('GET', `/api/register/${encodeURIComponent(slug)}/invite/${encodeURIComponent(qs.get('invite'))}`);
+      draft = { ...(draft || {}), guardian: { ...(draft?.guardian || {}), ...Object.fromEntries(Object.entries(inv.guardian).filter(([, v]) => v)) },
+        players: inv.players.length ? inv.players : draft?.players || [] };
+      notes.push(inv.players.length ? 'Welcome back! We’ve filled in your returning players — check the details, pick their program and answer the rest.' : 'Your players are already registered — you can add another player below.');
+      $('notice').hidden = false; $('notice').innerHTML = notes.map(esc).join('<br>');
+    } catch (e) { notes.push(e.message); $('notice').hidden = false; $('notice').innerHTML = notes.map(esc).join('<br>'); }
+  }
   $('familyQs').innerHTML = fam.map((q) => questionHtml(q, `fq-${q.id}`, draft?.answers?.[q.id])).join('');
   if (draft?.guardian) for (const [k, v] of Object.entries({ gFirst: 'firstName', gLast: 'lastName', gEmail: 'email', gPhone: 'phone', gAddress: 'address', gCity: 'city', gState: 'state', gZip: 'zip' })) $('form').elements[k].value = draft.guardian[v] || '';
   (draft?.players?.length ? draft.players : [{}]).forEach((p) => playerCard(p));

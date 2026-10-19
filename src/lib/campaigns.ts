@@ -4,6 +4,7 @@ import {
   ageIn, audit, changed, createKid, divisions, enroll, fitsAge, isDraftOnly, mustSeason, refreshPools, season, seasonState, slugOk,
   UserError, type Kid, type Season,
 } from './league.js'
+import { addContact } from './contacts.js'
 import { createCheckout, getCheckout, stripeConfigured, stripeMode, type LineItem } from './stripe.js'
 import { leagueAge, nameKey, normDate, uid } from './text.js'
 
@@ -404,6 +405,9 @@ function place(o: Order, p: OrderPlayer, c: Campaign, status: 'Registered' | 'Wa
     }
   }
   db.prepare('UPDATE order_players SET kid_id = ?, enrollment_id = ? WHERE id = ?').run(k.id, enrollmentId, p.id)
+  // Remember the parent for next year's returning-player outreach.
+  const g = J<CheckoutInput['guardian']>(o.guardian, { firstName: '', lastName: '', email: '', phone: '' })
+  try { addContact(k.id, { name: `${g.firstName} ${g.lastName}`, email: g.email, phone: g.phone }, 'registration') } catch (e) { if (!(e instanceof UserError)) throw e }
   db.prepare(`INSERT INTO registrations (source, verified, raw, first_name, last_name, birthdate, reg_year, program, season_id, outcome, kid_id, enrollment_id, division_id, note)
     VALUES ('web', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(JSON.stringify({ order: o.id, player: p.id, campaign: c.slug }), p.first_name, p.last_name, p.birthdate,
     c.season_id ? Number(c.season_id) : null, off.name, c.season_id, status === 'Registered' ? 'placed' : 'waitlist', k.id, enrollmentId, off.division_id,

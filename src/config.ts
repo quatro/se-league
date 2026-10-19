@@ -23,6 +23,13 @@ export const config = {
   //   2027majordraft.crushworldseries.com=2027/majors
   draftHosts: Object.fromEntries((env.DRAFT_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean)
     .map((s) => s.split('=').map((x) => x.trim()) as [string, string])),
+  // Outreach email goes through Resend (https://resend.com). With no key, sending is off and admins export the list instead.
+  mail: {
+    resendApiKey: env.RESEND_API_KEY || '',
+    from: env.MAIL_FROM || '',                 // e.g. "SE Baseball <registration@crushworldseries.com>" — a domain verified in Resend
+    replyTo: env.MAIL_REPLY_TO || '',          // where parents' replies go
+    apiBase: (env.RESEND_API_BASE || 'https://api.resend.com').replace(/\/$/, ''),
+  },
   stripe: {
     secretKey: env.STRIPE_SECRET_KEY || '',
     webhookSecret: env.STRIPE_WEBHOOK_SECRET || '',

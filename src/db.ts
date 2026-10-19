@@ -303,6 +303,52 @@ CREATE TABLE IF NOT EXISTS order_lines (
 );
 `)
 
+// Parents and guardians, per kid, kept across seasons. Pasted from a contact
+// list, typed in by an admin, or learned from every paid registration.
+db.exec(`
+CREATE TABLE IF NOT EXISTS contacts (
+  id         TEXT PRIMARY KEY,
+  kid_id     TEXT NOT NULL REFERENCES kids(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL DEFAULT '',
+  email      TEXT NOT NULL DEFAULT '',     -- lower-cased
+  phone      TEXT NOT NULL DEFAULT '',
+  relation   TEXT NOT NULL DEFAULT '',     -- Mother, Father, Guardian...
+  source     TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('import','registration','manual')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS contacts_kid ON contacts(kid_id);
+CREATE UNIQUE INDEX IF NOT EXISTS contacts_kid_email ON contacts(kid_id, email) WHERE email <> '';
+
+-- Outreach: an email asking returning families to register early. One
+-- message per parent email address, covering all of their kids, with a
+-- personal link that pre-fills the registration form.
+CREATE TABLE IF NOT EXISTS outreach (
+  id          TEXT PRIMARY KEY,
+  season_id   TEXT NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  subject     TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  filter      TEXT NOT NULL DEFAULT '{}',   -- JSON: divisionIds, statuses
+  created_by  TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS outreach_messages (
+  id          TEXT PRIMARY KEY,
+  outreach_id TEXT NOT NULL REFERENCES outreach(id) ON DELETE CASCADE,
+  email       TEXT NOT NULL,
+  name        TEXT NOT NULL DEFAULT '',
+  kid_ids     TEXT NOT NULL DEFAULT '[]',   -- JSON
+  token       TEXT NOT NULL UNIQUE,         -- the personal registration link
+  status      TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','sent','failed','exported')),
+  provider_id TEXT,
+  error       TEXT NOT NULL DEFAULT '',
+  sent_at     TEXT,
+  clicked_at  TEXT,
+  UNIQUE (outreach_id, email)
+);
+`)
+
 // Columns added after a table first shipped.
 function addColumn(table: string, column: string, ddl: string) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]

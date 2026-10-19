@@ -5,6 +5,8 @@ import { db } from '../db.js'
 import { clearFailures, grantViewer, login, logout, noteFailure, requireAdmin, requireViewer, throttled } from '../lib/auth.js'
 import * as D from '../lib/drafts.js'
 import * as L from '../lib/league.js'
+import { contactsFor, deleteContact, importContacts, saveContact } from '../lib/contacts.js'
+import * as O from '../lib/outreach.js'
 import { importRosters } from '../lib/rosters.js'
 import { previewRollover, rollover } from '../lib/rollover.js'
 import { ignoreRegistration, importRegistrationCsv, placeRegistration, processRegistration, storeRegistration } from '../lib/sportsengine.js'
@@ -206,7 +208,39 @@ admin.get('/kids/search', wrap((req) => {
   const q = `%${String(req.query.q ?? '').trim().toLowerCase()}%`
   return db.prepare('SELECT id, name, birthdate FROM kids WHERE lower(name) LIKE ? ORDER BY name LIMIT 20').all(q)
 }))
-admin.get('/kids/:id', wrap((req) => L.kidHistory(p(req, 'id'))))
+admin.get('/kids/:id', wrap((req) => ({ ...L.kidHistory(p(req, 'id')), contacts: contactsFor(p(req, 'id')) })))
+
+// parent / guardian contacts
+const contactBody = z.object({ name: z.string().max(120).optional(), email: z.string().max(200).optional(), phone: z.string().max(40).optional(), relation: z.string().max(40).optional() })
+admin.post('/kids/:id/contacts', wrap((req) => { saveContact(p(req, 'id'), contactBody.parse(req.body), actor(req)); return { ok: true, message: 'Contact saved' } }))
+admin.delete('/contacts/:id', wrap((req) => { deleteContact(p(req, 'id'), actor(req)) }))
+admin.post('/contacts/import', wrap((req) => importContacts(z.object({ text: z.string().min(1).max(2_000_000) }).parse(req.body).text, actor(req))))
+
+// outreach: emailing returning families to register early
+const outreachBody = z.object({ seasonId: z.string(), campaignId: z.string(), subject: z.string().max(300), body: z.string().max(10_000),
+  divisionIds: z.array(z.string()).max(50).default([]), statuses: z.array(z.enum(STATUSES)).max(10).default([]) })
+admin.get('/outreach', wrap((req) => ({
+  list: O.listOutreach(String(req.query.season ?? '')), defaults: { subject: O.DEFAULT_SUBJECT, body: O.DEFAULT_BODY },
+})))
+admin.post('/outreach/preview', wrap((req) => O.preview(outreachBody.parse(req.body))))
+admin.post('/outreach/test', wrap((req) => {
+  const b = outreachBody.extend({ to: z.string().max(200) }).parse(req.body)
+  return O.sendTest(b, b.to)
+}))
+// mode 'send' emails every family now; 'export' only records the list and personal links for sending some other way.
+admin.post('/outreach', wrap(async (req) => {
+  const b = outreachBody.extend({ mode: z.enum(['send', 'export']) }).parse(req.body)
+  const id = O.createOutreach(b, actor(req))
+  if (b.mode === 'export') return { id }
+  const r = await O.sendOutreach(id, actor(req))
+  return { id, ...r, message: r.failed ? `Sent ${r.sent}; ${r.failed} failed — ${r.error}` : `Sent to ${r.sent} ${r.sent === 1 ? 'family' : 'families'}` }
+}))
+admin.post('/outreach/:id/send', wrap(async (req) => {
+  const r = await O.sendOutreach(p(req, 'id'), actor(req))
+  return { ...r, message: r.failed ? `Sent ${r.sent}; ${r.failed} failed — ${r.error}` : `Sent ${r.sent}` }
+}))
+admin.get('/outreach/:id', wrap((req) => O.outreachDetail(p(req, 'id'))))
+api.get('/api/admin/outreach/:id/export.csv', requireAdmin, wrap((req, res) => sendCsv(res, 'outreach.csv', O.exportOutreach(p(req, 'id')))))
 admin.patch('/kids/:id', wrap((req) => {
   const b = z.object({ name: z.string().min(1).max(120).optional(), birthdate: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.null()]).optional(),
     notes: z.string().max(4000).optional() }).parse(req.body)

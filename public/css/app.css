@@ -226,3 +226,9 @@ dialog form,dialog .dlg{padding:16px;display:grid;gap:10px}
 .player .returning .note{margin:8px 0 0}
 /* Long interest options read better one per line. */
 #familyQs .choice{flex-direction:column;align-items:flex-start}
+
+/* outreach */
+.chk{display:inline-flex;align-items:center;gap:6px;font-weight:500;white-space:nowrap}
+.chk input{width:auto}
+.mailprev{border:1px solid var(--line);border-radius:4px;background:var(--bg);padding:10px 14px;margin-top:6px}
+.mailprev pre{white-space:pre-wrap;font-family:inherit;margin:8px 0 0}

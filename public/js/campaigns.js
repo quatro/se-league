@@ -138,7 +138,7 @@ $('campSel').onchange = (e) => { CS.id = e.target.value; CS.data = null; loadCam
 $('newCamp').onclick = () => openDialog(`<form class="dlg" id="ncf"><h2>New registration campaign</h2>
   <div class="row"><label for="ncName">Name</label><input type="text" id="ncName" required style="flex:1" placeholder="e.g. 2027 Spring"></div>
   <div class="row"><label for="ncSeason">Season</label><select id="ncSeason" style="width:auto"><option value="">None — standalone programs (summer team, fall league)</option>${S.st.seasons.map((s) => `<option value="${esc(s.id)}" ${s.id === S.st.current ? 'selected' : ''}>${s.year}</option>`).join('')}</select></div>
-  <p class="note">It starts as a draft with the season's divisions as programs, a $200 registration fee, $60 value cards, a $100 volunteer fee, and starter questions on experience, volunteering and the waiver — edit anything before opening it.</p>
+  <p class="note">It starts as a draft with the season’s divisions as programs, a $200 registration fee, the $5 LFUCG fee, an optional $60 value card, and starter questions on experience, volunteering and the waiver — edit anything before opening it.</p>
   <p class="err-text" id="ncErr"></p>
   <div class="row"><button class="btn primary" type="submit">Create</button><span class="spacer"></span><button class="btn" data-close>Cancel</button></div></form>`, (dl) => {
   dl.querySelector('#ncf').onsubmit = async (e) => {
