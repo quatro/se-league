@@ -17,6 +17,10 @@ import { uid } from './text.js'
 //   - otherwise: the division their new league age fits, with no team, so they
 //     go into that division's draft (T-Ball → Rookie, 9s → Majors/Minors pool)
 //   - too old for every division: graduated, not carried forward
+//   - a division that doesn't keep teams (Wee Ball) is a one-year stop: nobody
+//     repeats it. A Wee Baller still young enough for it moves up to the next
+//     division (T-Ball as a 4-year-old) as "Need to contact" — most of these
+//     families drop out, so the seat is flagged as at risk rather than counted on.
 //
 // Kids who registered but never played (Not returning, Withdrawn) aren't
 // carried forward; they come back through registration like anyone new.
@@ -29,11 +33,22 @@ export interface RolloverPlan {
 
 const PLAYED = ['Registered', 'Expected', 'Need to contact']
 
+/** Where a kid who played in `cur` goes next season, and whether they're moving up early (a Wee Baller who is still Wee Ball age). */
+export function nextDivision(cur: Division, divs: Division[], age: number | null, onTeam: boolean): { target: Division | undefined; stays: boolean; early: boolean } {
+  const fits = (d: Division) => (d.min_age == null || age == null || age >= d.min_age) && (d.max_age == null || age == null || age <= d.max_age)
+  if (cur.keep_teams && onTeam && fits(cur)) return { target: cur, stays: true, early: false }
+  const target = divisionForAge(divs.filter((d) => !isDraftOnly(d) || d.id === cur.id), age, cur.key)
+  if (cur.keep_teams || (target && target.id !== cur.id)) return { target, stays: false, early: false }
+  // Still fits a division that doesn't keep teams (or their age is unknown): no repeat year, up to the next division.
+  const up = divs.filter((d) => !isDraftOnly(d) && d.id !== cur.id && (d.min_age ?? 0) > (cur.min_age ?? 0)).sort((a, b) => (a.min_age ?? 0) - (b.min_age ?? 0))[0]
+  return up ? { target: up, stays: false, early: true } : { target, stays: false, early: false }
+}
+
 function plan(from: Season, toYear: number) {
   const fromDivs = divisions(from.id)
   const toSeason: Season = { ...from, id: String(toYear), year: toYear }
   const kids = new Map((db.prepare('SELECT id, birthdate FROM kids').all() as { id: string; birthdate: string | null }[]).map((k) => [k.id, k.birthdate]))
-  const rows: { p: Placement; target: Division | undefined; keepTeam: string | null; age: number | null }[] = []
+  const rows: { p: Placement; target: Division | undefined; keepTeam: string | null; age: number | null; early: boolean }[] = []
   let skipped = 0
   for (const p of placements(from.id)) {
     if (!PLAYED.includes(p.status) || !p.eff_division_id) { skipped++; continue }
@@ -41,9 +56,8 @@ function plan(from: Season, toYear: number) {
     const birthdate = kids.get(p.kid_id) ?? null
     const ageNow = ageIn(from, birthdate, p.age)
     const age = birthdate ? ageIn(toSeason, birthdate, null) : ageNow != null ? ageNow + 1 : null
-    const stays = cur.keep_teams && p.eff_team_id && (cur.min_age == null || age == null || age >= cur.min_age) && (cur.max_age == null || age == null || age <= cur.max_age)
-    const target = stays ? cur : divisionForAge(fromDivs.filter((d) => !isDraftOnly(d) || d.id === cur.id), age, cur.key)
-    rows.push({ p, target, keepTeam: stays ? p.eff_team_id : null, age })
+    const { target, stays, early } = nextDivision(cur, fromDivs, age, !!p.eff_team_id)
+    rows.push({ p, target, keepTeam: stays ? p.eff_team_id : null, age, early })
   }
   return { rows, skipped }
 }
@@ -110,8 +124,8 @@ function carry(from: Season, toId: string, rows: ReturnType<typeof plan>['rows']
   const fromTeams = new Map((db.prepare('SELECT * FROM teams WHERE season_id = ?').all(from.id) as Team[]).map((t) => [t.id, t]))
   const teamNames = new Map([...fromTeams].map(([id, t]) => [id, t.name]))
   const there = new Set((db.prepare('SELECT kid_id FROM enrollments WHERE season_id = ?').all(toId) as { kid_id: string }[]).map((r) => r.kid_id))
-  const ins = db.prepare(`INSERT INTO enrollments (id, season_id, kid_id, division_id, team_id, returning_team_id, age, returner, status, prior, tryout)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'Expected', ?, ?)`)
+  const ins = db.prepare(`INSERT INTO enrollments (id, season_id, kid_id, division_id, team_id, returning_team_id, age, returner, status, prior, tryout, division_locked, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`)
   // A returner's team that the next season doesn't have yet (rosters pasted after the rollover) is created there.
   const teamFor = (divId: string, old: Team) => {
     const found = toTeams.find((t) => t.division_id === divId && t.name === old.name)
@@ -132,7 +146,9 @@ function carry(from: Season, toId: string, rows: ReturnType<typeof plan>['rows']
     const tid = oldTeam ? teamFor(div.id, oldTeam) : null
     const prior = [fromNames.get(r.p.eff_division_id!), r.p.eff_team_id ? teamNames.get(r.p.eff_team_id) : null].filter(Boolean).join(' · ') + ` (${from.year})`
     // Kids arriving in a shared group without a team (9s turning 10) go through its drafts from the top, like new registrants.
-    ins.run(uid(), toId, r.p.kid_id, div.id, tid, tid, r.age, prior, !tid && div.group_key ? 1 : 0)
+    // Moved up early (Wee Ball → T-Ball at 4): pinned so it reads as an exception, and at risk because most don't come back.
+    ins.run(uid(), toId, r.p.kid_id, div.id, tid, tid, r.age, r.early ? 'Need to contact' : 'Expected', prior, !tid && div.group_key ? 1 : 0, r.early ? 1 : 0,
+      r.early ? `Played ${fromNames.get(r.p.eff_division_id!)} in ${from.year}; no repeat year, so moved up to ${div.name}. Likely to drop out — confirm with the family.` : '')
     n++
   }
   return n

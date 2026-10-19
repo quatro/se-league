@@ -9,7 +9,7 @@ process.env.DB_PATH = path.join(dir, 'league.db')
 const L = await import('../src/lib/league.js')
 const D = await import('../src/lib/drafts.js')
 const SE = await import('../src/lib/sportsengine.js')
-const { rollover, previewRollover } = await import('../src/lib/rollover.js')
+const { rollover, previewRollover, nextDivision: next } = await import('../src/lib/rollover.js')
 const { importRosters } = await import('../src/lib/rosters.js')
 const { db } = await import('../src/db.js')
 
@@ -75,6 +75,16 @@ test('rollover 2026 → 2027: returners keep teams, others move up by age, too o
   assert.equal(enr('2027', 'Nina Nine').draft_id, draft('2027', 'majors').id)
   assert.equal(enr('2027', 'Rook Seven').prior, 'Rookie · Cubs (2026)')
   assert.equal(enr('2027', 'Rook Seven').status, 'Expected')
+})
+
+test('Wee Ball is a one-year stop: a returner still Wee Ball age moves up to T-Ball, at risk', () => {
+  const d = (key: string, min: number, max: number, keep = 0) => ({ id: key, key, name: key, min_age: min, max_age: max, keep_teams: keep, se_match: '', group_key: '' }) as unknown as L.Division
+  const wee = d('wee', 3, 4), tee = d('tee', 5, 6, 1), rook = d('rook', 7, 8, 1), divs = [wee, tee, rook]
+  assert.deepEqual(next(wee, divs, 4, false), { target: tee, stays: false, early: true })
+  assert.deepEqual(next(wee, divs, null, false), { target: tee, stays: false, early: true }, 'no age on file: still no repeat year')
+  assert.deepEqual(next(wee, divs, 5, false), { target: tee, stays: false, early: false })
+  assert.deepEqual(next(tee, divs, 6, true), { target: tee, stays: true, early: false }, 'T-Ball keeps teams: a 6 stays')
+  assert.deepEqual(next(tee, divs, 7, true), { target: rook, stays: false, early: false })
 })
 
 test('draft order from last season’s records: worst record first', () => {
