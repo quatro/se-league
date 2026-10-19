@@ -4,9 +4,14 @@
   --stitch:#c8102e; --clock:#ffd23f; --clock-ink:#3b2f00; --full:#e7e3d9; --ok:#1f7a4d; --warn:#b5651d; --blue:#2f6db5;
   --display:"Saira Condensed","Arial Narrow",Arial,sans-serif; --body:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   color-scheme:light;
+  /* Charts: seasons are categorical (fixed order), ages within a division an ordinal blue ramp. Validated against --card. */
+  --yr1:#2a78d6; --yr2:#eb6834; --yr3:#1baf7a; --yr4:#eda100;
+  --age1:#86b6ef; --age2:#3987e5; --age3:#1c5cab; --age-unk:#c9c5ba;
 }
 @media (prefers-color-scheme:dark){:root{
-  --bg:#0e1626; --card:#16213a; --ink:#eef1f7; --muted:#9aa5bd; --line:#2b3a5c; --stitch:#ff4d61; --clock:#ffd23f; --clock-ink:#2a2100; --full:#1b2742; --ok:#4cc38a; --warn:#f0a35e; --blue:#79a8ff; color-scheme:dark}}
+  --bg:#0e1626; --card:#16213a; --ink:#eef1f7; --muted:#9aa5bd; --line:#2b3a5c; --stitch:#ff4d61; --clock:#ffd23f; --clock-ink:#2a2100; --full:#1b2742; --ok:#4cc38a; --warn:#f0a35e; --blue:#79a8ff; color-scheme:dark;
+  --yr1:#3987e5; --yr2:#d95926; --yr3:#199e70; --yr4:#c98500;
+  --age1:#1c5cab; --age2:#3987e5; --age3:#86b6ef; --age-unk:#3b4763}}
 *{box-sizing:border-box}
 html,body{background:var(--bg);color:var(--ink);margin:0}
 body{font-family:var(--body);font-size:14px;line-height:1.45;padding:0 16px 40px}
@@ -233,3 +238,33 @@ dialog form,dialog .dlg{padding:16px;display:grid;gap:10px}
 .chk input{width:auto}
 .mailprev{border:1px solid var(--line);border-radius:4px;background:var(--bg);padding:10px 14px;margin-top:6px}
 .mailprev pre{white-space:pre-wrap;font-family:inherit;margin:8px 0 0}
+
+/* ---------- ages charts (Seats page) ---------- */
+.ages{align-items:start}
+.ages h2{font-family:var(--display);font-weight:800;font-size:1.1rem;text-transform:uppercase;letter-spacing:.04em;margin:0}
+.vlegend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:.82rem}
+.vlegend>span{display:inline-flex;align-items:center;gap:6px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;flex:none}
+.yr1{background:var(--yr1)}.yr2{background:var(--yr2)}.yr3{background:var(--yr3)}.yr4{background:var(--yr4)}
+.age1{background:var(--age1)}.age2{background:var(--age2)}.age3{background:var(--age3)}.unk{background:var(--age-unk)}
+.colchart{padding:4px 0 0 30px}
+.colchart .plot{position:relative;height:200px;margin-bottom:22px}
+.colchart .grid{position:absolute;left:0;right:0;border-top:1px solid var(--line);height:0}
+.colchart .grid span{position:absolute;right:calc(100% + 6px);top:-.6em;font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.colchart .cols{position:absolute;inset:0;display:flex;gap:6px}
+.agecol{flex:1;position:relative;min-width:0}
+.agecol:hover{background:color-mix(in srgb,var(--ink) 5%,transparent)}
+.agecol .bars{position:absolute;inset:0 2px;display:flex;align-items:flex-end;gap:2px}
+.agecol .bars i{flex:1;border-radius:4px 4px 0 0;position:relative;min-height:0}
+.agecol .bars b{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);font-size:.7rem;font-weight:600;color:var(--muted);padding-bottom:2px;font-variant-numeric:tabular-nums}
+.agecol .x{position:absolute;top:calc(100% + 4px);left:0;right:0;text-align:center;font-size:.78rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.comp{display:grid;gap:6px;padding:6px 0;border-top:1px solid var(--line)}
+.comp:first-of-type{border-top:0}
+.stack{position:relative;display:flex;gap:2px;height:22px}
+.stack i{height:100%;display:flex;align-items:center;justify-content:center;min-width:2px}
+.stack i:first-child{border-radius:4px 0 0 4px}.stack i:last-of-type{border-radius:0 4px 4px 0}.stack i:only-of-type{border-radius:4px}
+.stack i b{font-size:.72rem;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.stack i.age1 b,.stack i.unk b{color:#14213d}
+@media (prefers-color-scheme:dark){.stack i.age1 b{color:#fff}.stack i.age3 b{color:#0e1626}.stack i.unk b{color:var(--ink)}}
+.stack .cap{position:absolute;top:-4px;bottom:-4px;width:0;border-left:2px solid var(--ink)}
+.tip{position:fixed;z-index:50;max-width:300px;background:var(--ink);color:var(--card);padding:6px 9px;border-radius:4px;font-size:.8rem;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.2)}

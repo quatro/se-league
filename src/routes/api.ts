@@ -2,6 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 import { config } from '../config.js'
 import { db } from '../db.js'
+import { ageBreakdown } from '../lib/ages.js'
 import { clearFailures, grantViewer, login, logout, noteFailure, requireAdmin, requireViewer, throttled } from '../lib/auth.js'
 import * as D from '../lib/drafts.js'
 import * as L from '../lib/league.js'
@@ -68,6 +69,7 @@ api.get('/api/home', (req, res) => {
 })
 
 api.get('/api/seasons/:id/state', requireViewer, wrap((req) => L.seasonState(p(req, 'id'), !!req.admin)))
+api.get('/api/seasons/:id/ages', requireViewer, wrap((req) => ageBreakdown(p(req, 'id'))))
 api.get('/api/drafts/:id/state', requireViewer, wrap((req) => D.draftState(p(req, 'id'), !!req.admin)))
 
 api.get('/api/stream', requireViewer, (req, res) => {

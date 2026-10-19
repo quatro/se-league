@@ -142,11 +142,90 @@ function renderSeats() {
       ${members}${flags.length && !complete() ? `<div class="flags">${flags.join('')}</div>` : ''}
     </article>`;
   }).join('');
+  loadAges();
   const t = st.total;
   $('totals').innerHTML = `<span>League: <b>${t.capacity}</b> seats</span><span><b>${t.registered}</b> registered</span><span><b>${t.held}</b> held for expected returners</span><span><b>${t.open}</b> open</span>${st.unplaced && isAdmin() ? `<span class="warn-text">${st.unplaced} not in a division</span>` : ''}`;
 }
 
 /* ---------- drafts ---------- */
+/* ---------- ages: kids per age year over year, and what each division is made of ---------- */
+const AG = { sid: null, at: 0, data: null, busy: false };
+async function loadAges() {
+  if (AG.busy || (AG.sid === S.sid && Date.now() - AG.at < 30e3)) return renderAges();
+  AG.busy = true;
+  try { AG.data = await call('GET', `/api/seasons/${encodeURIComponent(S.sid)}/ages`); AG.sid = S.sid; AG.at = Date.now(); }
+  catch { AG.data = null; } finally { AG.busy = false; }
+  renderAges();
+}
+const ageWord = (a) => (a == null ? 'Age unknown' : `${a}s`);
+function niceTicks(max) {
+  const step = [5, 10, 20, 25, 50, 100, 200].find((s) => max / s <= 5) || 500;
+  const ticks = []; for (let v = 0; v <= max; v += step) ticks.push(v);
+  if (ticks.at(-1) < max) ticks.push(ticks.at(-1) + step);
+  return ticks;
+}
+function renderAges() {
+  const box = $('ages'), d = AG.data;
+  if (!box) return;
+  if (!d || AG.sid !== S.sid) { box.innerHTML = ''; return; }
+  const yrs = d.byAge, label = (y) => `${y.year} ${y.kind}`;
+  // Every age any shown season has, youngest first.
+  const ages = [...new Set(yrs.flatMap((y) => y.ages.map((a) => a.age)))].sort((a, b) => a - b);
+  const count = (y, a) => y.ages.find((x) => x.age === a)?.count ?? 0;
+  const ticks = niceTicks(Math.max(1, ...yrs.flatMap((y) => y.ages.map((a) => a.count))));
+  const top = ticks.at(-1), pct = (n) => `${(100 * n / top).toFixed(2)}%`;
+  const last = yrs.at(-1);
+  const unknown = yrs.filter((y) => y.unknown).map((y) => `${y.unknown} in ${y.year}`).join(', ');
+  const byAge = `<div class="panel"><div class="hd"><h2>Players by age</h2>
+      <div class="vlegend">${yrs.map((y, i) => `<span><i class="sw yr${i + 1}"></i>${esc(label(y))}</span>`).join('')}</div></div>
+    <div class="bd">
+      <p class="note">League age on ${esc(S.st.season.age_cutoff.replace('-', '/'))} of each season. ${last.kind === 'projected' ? `${last.year} counts every kid holding a seat — registered or expected back — before anyone drops out or new families sign up.` : ''}</p>
+      <div class="colchart" role="img" aria-label="${esc(yrs.map((y) => `${label(y)}: ${y.ages.map((a) => `${a.count} age ${a.age}`).join(', ')}`).join('; '))}">
+        <div class="plot">
+          ${ticks.map((t) => `<div class="grid" style="bottom:${pct(t)}"><span>${t}</span></div>`).join('')}
+          <div class="cols">${ages.map((a) => `<div class="agecol" data-tip="${esc(`Age ${a} — ${yrs.map((y) => `${y.year}: ${count(y, a)} ${y.kind}`).join(' · ')}`)}">
+            <div class="bars">${yrs.map((y, i) => `<i class="yr${i + 1}" style="height:${pct(count(y, a))}">${i === yrs.length - 1 && count(y, a) ? `<b>${count(y, a)}</b>` : ''}</i>`).join('')}</div>
+            <span class="x">${a}</span></div>`).join('')}</div>
+        </div>
+      </div>
+      ${unknown ? `<p class="note">Not shown: kids with no birthdate or age on file (${esc(unknown)}).</p>` : ''}
+      <details><summary class="note">Show as a table</summary><div class="scroll"><table class="kt"><tr><th>Age</th>${yrs.map((y) => `<th class="num">${esc(label(y))}</th>`).join('')}</tr>
+        ${ages.map((a) => `<tr><td>${a}</td>${yrs.map((y) => `<td class="num">${count(y, a)}</td>`).join('')}</tr>`).join('')}
+        ${unknown ? `<tr><td>Unknown</td>${yrs.map((y) => `<td class="num">${y.unknown}</td>`).join('')}</tr>` : ''}</table></div></details>
+    </div></div>`;
+
+  // Each division as one bar split by age; the line marks its seats.
+  const scale = Math.max(1, ...d.composition.map((u) => Math.max(u.total, u.capacity)));
+  const own = (u, from) => u.name.split(' + ').includes(from);
+  const fromText = (u, f) => !f.division ? '' : f.division === 'new' ? `${f.count} new` : own(u, f.division) ? `${f.count} back in ${f.division}` : `${f.count} up from ${f.division}`;
+  const shade = (u, a) => {
+    if (a == null) return 'unk';
+    if (u.min_age == null || u.max_age == null || u.max_age === u.min_age) return 'age2';
+    return `age${1 + Math.round(2 * (Math.min(Math.max(a, u.min_age), u.max_age) - u.min_age) / (u.max_age - u.min_age))}`;
+  };
+  const comp = `<div class="panel"><div class="hd"><h2>What each division is made of</h2></div><div class="bd">
+      <p class="note">${d.season.year} ${d.season.kind === 'played' ? 'players' : 'kids holding a seat'}, by league age${d.prevYear ? ` and where they played in ${d.prevYear}` : ''}. Darker = older. The line marks the division's seats.</p>
+      ${d.composition.map((u) => `<div class="comp">
+        <div class="row"><b>${esc(u.name)}</b><span class="spacer"></span><span class="sub">${u.total} of ${u.capacity} seats${u.capacity && u.total > u.capacity ? ` · <span class="warn-text">${u.total - u.capacity} over</span>` : ''}</span></div>
+        <div class="stack" role="img" aria-label="${esc(`${u.name}: ${u.ages.map((a) => `${a.count} ${ageWord(a.age)}`).join(', ')}; ${u.capacity} seats`)}">
+          ${u.ages.map((a) => `<i class="${shade(u, a.age)}" style="width:${(100 * a.count / scale).toFixed(2)}%" data-tip="${esc(`${ageWord(a.age)}: ${a.count}${a.from.some((f) => f.division) ? ` — ${a.from.map((f) => fromText(u, f)).join(', ')}` : ''}`)}">${a.count / scale > 0.06 ? `<b>${a.count}</b>` : ''}</i>`).join('')}
+          ${u.capacity ? `<span class="cap" style="left:${(100 * u.capacity / scale).toFixed(2)}%" title="${u.capacity} seats"></span>` : ''}
+        </div>
+        <div class="vlegend">${u.ages.map((a) => `<span><i class="sw ${shade(u, a.age)}"></i><b>${ageWord(a.age)} · ${a.count}</b>${a.from.some((f) => f.division) ? ` <span class="sub">${esc(a.from.map((f) => fromText(u, f)).join(', '))}</span>` : ''}</span>`).join('') || '<span class="sub">No one yet</span>'}</div>
+      </div>`).join('')}
+    </div></div>`;
+  box.innerHTML = byAge + comp;
+}
+// One small tooltip for every chart mark that has data-tip.
+document.addEventListener('mousemove', (e) => {
+  const el = e.target.closest?.('[data-tip]'), tip = $('tip');
+  if (!tip) return;
+  if (!el) { tip.hidden = true; return; }
+  tip.textContent = el.dataset.tip; tip.hidden = false;
+  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8), y = e.clientY + 16 + tip.offsetHeight > innerHeight ? e.clientY - tip.offsetHeight - 10 : e.clientY + 16;
+  tip.style.left = `${x}px`; tip.style.top = `${y}px`;
+});
+
 function renderDrafts() {
   const st = S.st;
   if (!st.drafts.length) { $('draftCards').innerHTML = `<p class="note">No draft rooms for ${st.season.year}.${isAdmin() ? ' Set one up per division under <b>Divisions &amp; Teams</b>.' : ''}</p>`; return; }
