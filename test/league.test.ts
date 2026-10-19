@@ -173,3 +173,32 @@ test('late 2026 rosters carry into 2027 as returners', () => {
   assert.equal(r.carried, 1)
   assert.equal(L.team(enr('2027', 'Late Minor').team_id!)!.name, 'Tigers')
 })
+
+test('late rosters create returners\' teams the next season lacks, and playing-up kids keep the higher team', () => {
+  const r = importRosters('2026', [
+    'Name,Birthdate,Division,Team',
+    'Young Rookie,2019-03-01,Rookie,Mudcats',
+    'Up Nine,2017-02-01,9-Year-Old League,Cubs',
+    'Up Nine,2017-02-01,Majors,Reds',
+  ].join('\n'), A)
+  assert.equal(r.carried, 2)
+  assert.deepEqual(r.playingUp, ['Up Nine: Majors · Reds (also 9-Year-Old League · Cubs)'])
+  assert.equal(L.team(enr('2027', 'Young Rookie').team_id!)!.name, 'Mudcats')
+  assert.equal(L.team(enr('2027', 'Young Rookie').team_id!)!.division_id, div('2027', 'rookie').id)
+  assert.equal(place('2026', 'Up Nine').eff_division_id, div('2026', 'majors').id)
+  assert.match(enr('2026', 'Up Nine').notes, /Also on 9-Year-Old League · Cubs/)
+  assert.equal(L.team(enr('2027', 'Up Nine').team_id!)!.name, 'Reds')
+})
+
+test('an admin can move a 4-year-old up to T-Ball as an exception', () => {
+  L.saveDivision('2027', null, { key: 'weeball', name: 'Wee Ball', teams: 1, roster_size: 3, min_age: 3, max_age: 4, se_match: 'wee ball', sort: -1 }, A)
+  const k = L.createKid('Tiny Upper', '2022-09-01')   // league age 4 in 2027
+  const e = L.enroll('2027', k.id, { divisionId: div('2027', 'weeball').id, status: 'Registered' }, A)
+  L.moveEnrollment(e.id, div('2027', 'tball').id, A, 'age exception')
+  assert.equal(enr('2027', 'Tiny Upper').draft_id, draft('2027', 'tball').id)
+  const r = register('Tiny', 'Upper', 'Wee Ball', '2022-09-01')
+  assert.match(r.note, /kept in T-Ball \(placed by an admin\)/)
+  const tb = (L.seasonState('2027', true) as { divisions: L.DivisionView[] }).divisions.find((d) => d.key === 'tball')!
+  assert.equal(tb.ageExceptions, 1)
+  assert.equal(enr('2027', 'Tiny Upper').division_id, div('2027', 'tball').id)
+})

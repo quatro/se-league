@@ -18,7 +18,7 @@ season builds the next one from it.
     team owes roster size minus its returners, so teams that lost more players
     get the later comp rounds. The order is straight or snake, and can be set
     from last season's records (worst record picks first).
-  - **Blind** (T-Ball): each kid in the pool gets a hidden random number. A
+  - **Blind** (T-Ball): returners stay on their teams, as above. Each kid in the pool gets a hidden random number. A
     coach picks a number and that reveals the kid. Late registrations get the
     next numbers, so nobody else's number changes.
   - **Handoff:** closing the Majors draft moves everyone not picked into the
@@ -43,7 +43,7 @@ shared pool.
 teams in the same draft order, and the draft rooms. Then every kid who played
 gets an *Expected* spot in the new season:
 
-- **Back on the same team** in a keep-teams division (Majors, Minors, Rookie)
+- **Back on the same team** in a keep-teams division (Majors, Minors, Rookie, T-Ball)
   while still young enough.
 - **Otherwise** into the division their new league age fits, entering its
   draft.

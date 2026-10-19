@@ -10,8 +10,9 @@ import {
 //   standard  Majors, Minors, Rookie: returners stay on their teams, each team
 //             owes (roster size − returners) picks, so teams that lost more
 //             players get the later "comp" rounds. Straight or snake order.
-//   blind     T-Ball: every kid in the pool gets a hidden random number; a
-//             coach calls a number and that reveals the kid.
+//   blind     T-Ball: returners stay on their teams the same way; every kid in
+//             the pool gets a hidden random number, and a coach calls a number
+//             to reveal the kid.
 //
 // A draft can hand off to a next one (Majors → Minors). Closing it moves every
 // undrafted kid in its pool to the next draft, and the next draft can't make

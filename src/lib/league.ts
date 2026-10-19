@@ -415,7 +415,7 @@ export function deleteEnrollment(id: string, actor: string) {
 }
 
 // ---------- season view ----------
-export interface DivisionView extends Division { seats: Seats; draft: { id: string; key: string; format: string; status: string } | null; ageMismatches?: number }
+export interface DivisionView extends Division { seats: Seats; draft: { id: string; key: string; format: string; status: string } | null; ageMismatches?: number; ageExceptions?: number }
 export interface GroupView { key: string; name: string; divisions: string[]; seats: Seats }
 
 export function seasonState(seasonId: string, isAdmin: boolean) {
@@ -428,8 +428,12 @@ export function seasonState(seasonId: string, isAdmin: boolean) {
     const mine = ps.filter((p) => p.eff_division_id === d.id)
     const r = draftFor(d.id)
     const v: DivisionView = { ...d, seats: seats(d, mine, s.warn_at), draft: r ? { id: r.id, key: r.key, format: r.format, status: r.status } : null }
-    if (isAdmin) v.ageMismatches = mine.filter((p) => !OUT.includes(p.status) && !fitsAge(d, ageIn(s, kids.get(p.kid_id)?.birthdate ?? null, p.age))).length
-    else { v.se_match = ''; v.notes = '' }
+    if (isAdmin) {
+      // Kids an admin placed here on purpose (a 4-year-old moved up to T-Ball) are exceptions, not mistakes.
+      const outside = mine.filter((p) => !OUT.includes(p.status) && !fitsAge(d, ageIn(s, kids.get(p.kid_id)?.birthdate ?? null, p.age)))
+      v.ageMismatches = outside.filter((p) => !p.division_locked).length
+      v.ageExceptions = outside.length - v.ageMismatches
+    } else { v.se_match = ''; v.notes = '' }
     return v
   })
   // Divisions sharing a registration program (Majors + Minors) are counted together:

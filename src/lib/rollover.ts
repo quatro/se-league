@@ -1,7 +1,7 @@
 import { db } from '../db.js'
 import {
   ageIn, audit, changed, divisionForAge, divisions, divisionTeams, drafts, isDraftOnly, mustSeason, placements, refreshPools,
-  season, setSetting, UserError, type Division, type Placement, type Season,
+  season, setSetting, UserError, type Division, type Placement, type Season, type Team,
 } from './league.js'
 import { uid } from './text.js'
 
@@ -12,7 +12,7 @@ import { uid } from './text.js'
 // same draft order, and the same draft rooms. Then every kid who played gets
 // an "Expected" spot in the new season:
 //
-//   - still young enough for a keep-teams division (Majors, Minors, Rookie):
+//   - still young enough for a keep-teams division (Majors, Minors, Rookie, T-Ball):
 //     back on the same team as a returner
 //   - otherwise: the division their new league age fits, with no team, so they
 //     go into that division's draft (T-Ball → Rookie, 9s → Majors/Minors pool)
@@ -107,17 +107,29 @@ function carry(from: Season, toId: string, rows: ReturnType<typeof plan>['rows']
   const toDivs = divisions(toId)
   const toTeams = db.prepare('SELECT id, division_id, name FROM teams WHERE season_id = ?').all(toId) as { id: string; division_id: string; name: string }[]
   const fromNames = new Map(divisions(from.id).map((d) => [d.id, d.name]))
-  const teamNames = new Map((db.prepare('SELECT id, name FROM teams WHERE season_id = ?').all(from.id) as { id: string; name: string }[]).map((t) => [t.id, t.name]))
+  const fromTeams = new Map((db.prepare('SELECT * FROM teams WHERE season_id = ?').all(from.id) as Team[]).map((t) => [t.id, t]))
+  const teamNames = new Map([...fromTeams].map(([id, t]) => [id, t.name]))
   const there = new Set((db.prepare('SELECT kid_id FROM enrollments WHERE season_id = ?').all(toId) as { kid_id: string }[]).map((r) => r.kid_id))
   const ins = db.prepare(`INSERT INTO enrollments (id, season_id, kid_id, division_id, team_id, returning_team_id, age, returner, status, prior, tryout)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'Expected', ?, ?)`)
+  // A returner's team that the next season doesn't have yet (rosters pasted after the rollover) is created there.
+  const teamFor = (divId: string, old: Team) => {
+    const found = toTeams.find((t) => t.division_id === divId && t.name === old.name)
+    if (found) return found.id
+    const id = uid()
+    const max = (db.prepare('SELECT COALESCE(MAX(draft_order), 0) m FROM teams WHERE division_id = ?').get(divId) as { m: number }).m
+    db.prepare('INSERT INTO teams (id, season_id, division_id, name, color, fg, draft_order, coach) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, toId, divId, old.name, old.color, old.fg, max + 1, old.coach)
+    toTeams.push({ id, division_id: divId, name: old.name })
+    return id
+  }
   let n = 0
   for (const r of rows) {
     if (!r.target || there.has(r.p.kid_id)) continue
     const div = toDivs.find((d) => d.key === r.target!.key)
     if (!div) continue
-    const oldTeam = r.keepTeam ? teamNames.get(r.keepTeam) : undefined
-    const tid = oldTeam ? toTeams.find((t) => t.division_id === div.id && t.name === oldTeam)?.id ?? null : null
+    const oldTeam = r.keepTeam ? fromTeams.get(r.keepTeam) : undefined
+    const tid = oldTeam ? teamFor(div.id, oldTeam) : null
     const prior = [fromNames.get(r.p.eff_division_id!), r.p.eff_team_id ? teamNames.get(r.p.eff_team_id) : null].filter(Boolean).join(' · ') + ` (${from.year})`
     // Kids arriving in a shared group without a team (9s turning 10) go through its drafts from the top, like new registrants.
     ins.run(uid(), toId, r.p.kid_id, div.id, tid, tid, r.age, prior, !tid && div.group_key ? 1 : 0)

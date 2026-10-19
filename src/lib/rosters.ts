@@ -12,6 +12,9 @@ import { nameKey, normDate, parseCsv, uid } from './text.js'
 // are created on the fly. For a finished season the kids are recorded as
 // having played, and if the next season already exists they carry into it
 // as returners, exactly as a rollover would have done.
+//
+// A kid listed twice (a 9-year-old also rostered on a Majors or Minors team)
+// is placed in the higher division; the other team is kept as a note.
 
 const H = {
   name: ['name', 'player', 'playername', 'participant', 'participantname', 'athlete', 'fullname', 'kid'],
@@ -24,7 +27,7 @@ const H = {
 }
 const hk = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
 
-export interface RosterResult { added: number; updated: number; newKids: number; teamsCreated: number; skipped: string[]; carried: number }
+export interface RosterResult { added: number; updated: number; newKids: number; teamsCreated: number; skipped: string[]; carried: number; playingUp: string[] }
 
 export function importRosters(seasonId: string, text: string, actor: string, defaultDivisionId: string | null = null): RosterResult {
   const s = mustSeason(seasonId)
@@ -40,7 +43,8 @@ export function importRosters(seasonId: string, text: string, actor: string, def
     return divs.find((d) => nameKey(d.name) === k || d.key === k.replace(/ /g, '')) ?? divs.find((d) => (d.se_match || d.name).split(',').some((w) => nameKey(w) && ` ${k} `.includes(` ${nameKey(w)} `)))
   }
   const played = s.status === 'complete'
-  const res: RosterResult = { added: 0, updated: 0, newKids: 0, teamsCreated: 0, skipped: [], carried: 0 }
+  const res: RosterResult = { added: 0, updated: 0, newKids: 0, teamsCreated: 0, skipped: [], carried: 0, playingUp: [] }
+  const seen = new Map<string, { div: Division; label: string }>()
   db.transaction(() => {
     for (const r of rows.slice(1)) {
       const get = (i: number) => (i >= 0 ? (r[i] ?? '').trim() : '')
@@ -62,6 +66,19 @@ export function importRosters(seasonId: string, text: string, actor: string, def
       let kid = cands[0]
       if (!kid) { kid = createKid(name, dob); res.newKids++ } else if (dob && !kid.birthdate) db.prepare('UPDATE kids SET birthdate = ? WHERE id = ?').run(dob, kid.id)
       const e = db.prepare('SELECT id FROM enrollments WHERE season_id = ? AND kid_id = ?').get(seasonId, kid.id) as { id: string } | undefined
+      const label = [div.name, teamName].filter(Boolean).join(' · ')
+      const first = seen.get(kid.id)
+      if (first && e) {
+        const [hi, lo] = div.sort > first.div.sort ? [label, first.label] : [first.label, label]
+        if (div.sort > first.div.sort) {
+          db.prepare(`UPDATE enrollments SET division_id = ?, team_id = ?, returning_team_id = ?, updated_at = datetime('now') WHERE id = ?`).run(div.id, teamId, teamId, e.id)
+          seen.set(kid.id, { div, label })
+        }
+        db.prepare(`UPDATE enrollments SET notes = trim(notes || ' ' || ?) WHERE id = ?`).run(`Also on ${lo}.`, e.id)
+        res.playingUp.push(`${name}: ${hi} (also ${lo})`)
+        continue
+      }
+      seen.set(kid.id, { div, label })
       if (e) {
         db.prepare(`UPDATE enrollments SET division_id = ?, team_id = ?, returning_team_id = ?, age = COALESCE(?, age), updated_at = datetime('now') WHERE id = ?`)
           .run(div.id, teamId, teamId, age, e.id)

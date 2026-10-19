@@ -122,6 +122,8 @@ function renderSeats() {
     if (s.waitlist) flags.push(`<span class="chip">${s.waitlist} waitlisted</span>`);
     const mism = u.div ? u.div.ageMismatches : u.members.reduce((a, d) => a + (d.ageMismatches || 0), 0);
     if (mism) flags.push(`<span class="chip meh">${plural(mism, 'kid')} outside the age range</span>`);
+    const exc = u.div ? u.div.ageExceptions : u.members.reduce((a, d) => a + (d.ageExceptions || 0), 0);
+    if (exc) flags.push(`<span class="chip" title="Pinned here by an admin as an age exception">${plural(exc, 'kid')} moved up by an admin</span>`);
     const sub = u.div ? `${u.div.teams} teams × ${u.div.roster_size}${ageRange(u.div) ? ` · ${esc(ageRange(u.div))}` : ''}`
       : `${u.members.map((d) => `${esc(d.name)} ${d.teams}×${d.roster_size}`).join(' · ')} · one registration, drafts decide`;
     const members = u.members ? `<div class="sub">${u.members.map((d) => `<b>${esc(d.name)}</b>: ${d.seats.registered + d.seats.held} placed of ${d.seats.capacity}`).join(' · ')}</div>` : '';
