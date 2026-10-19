@@ -41,7 +41,7 @@ function renderCampaigns() {
       <div class="grid2" id="campForm">
         <div class="bd" style="padding:0">
           <div class="row"><label for="cName">Name</label><input type="text" id="cName" value="${esc(c.name)}" style="flex:1"></div>
-          <div class="row"><label for="cStatus">Status</label><select id="cStatus" style="width:auto"><option value="draft" ${c.status === 'draft' ? 'selected' : ''}>Draft — only admins can preview</option><option value="open" ${c.status === 'open' ? 'selected' : ''}>Open — families can register</option><option value="closed" ${c.status === 'closed' ? 'selected' : ''}>Closed</option></select></div>
+          <div class="row"><label for="cStatus">Status</label><select id="cStatus" style="width:auto"><option value="draft" ${c.status === 'draft' ? 'selected' : ''}>Draft — only admins see it (and can test-register while Stripe is in test mode)</option><option value="open" ${c.status === 'open' ? 'selected' : ''}>Open — families can register</option><option value="closed" ${c.status === 'closed' ? 'selected' : ''}>Closed</option></select></div>
           <div class="row"><label for="cSlug">Web address</label><span class="sub">/register/</span><input type="text" id="cSlug" value="${esc(c.slug)}" style="width:160px"></div>
           <div class="row"><label for="cSeason">Season</label><select id="cSeason" style="width:auto"><option value="">None (standalone programs)</option>${seasonOpts}</select></div>
           <div class="row"><label for="cOpens">Opens</label><input type="datetime-local" id="cOpens" value="${esc(local(c.opens_at))}" style="width:auto"><label for="cCloses" style="min-width:0">Closes</label><input type="datetime-local" id="cCloses" value="${esc(local(c.closes_at))}" style="width:auto"></div>
@@ -82,16 +82,17 @@ function renderCampaigns() {
 
   <div class="panel wide"><div class="hd"><h2>Questions</h2><div class="row"><button class="btn" id="addQP">Add player question</button><button class="btn" id="addQF">Add family question</button></div></div><div class="bd">
     <p class="note"><b>Player</b> questions are asked for each child (experience, shirt size); <b>family</b> questions once (volunteering, coaching experience, the waiver). For “Pick one” / “Pick any”, list the choices separated by commas.</p>
-    <div class="scroll"><table class="kt" id="qTable"><tr><th>Asked</th><th>Question</th><th>Type</th><th>Choices</th><th>Required</th><th>Programs</th><th>On</th><th class="num">Order</th><th></th></tr>
+    <div class="scroll"><table class="kt" id="qTable"><tr><th>Asked</th><th>Question</th><th>Type</th><th>Choices</th><th>Required</th><th title="Skipped when the family confirms the player played last season">New players only</th><th>Programs</th><th>On</th><th class="num">Order</th><th></th></tr>
     ${d.questions.map((q) => `<tr data-q="${esc(q.id)}"><td><select data-f="scope"><option value="player" ${q.scope === 'player' ? 'selected' : ''}>Each player</option><option value="family" ${q.scope === 'family' ? 'selected' : ''}>Once per family</option></select></td>
       <td><input type="text" data-f="label" value="${esc(q.label)}" style="min-width:220px"><input type="text" data-f="help" value="${esc(q.help)}" placeholder="Help text (optional)" style="margin-top:4px;min-width:220px"></td>
       <td><select data-f="type">${Object.entries(QTYPES).map(([k, v]) => `<option value="${k}" ${q.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
       <td><input type="text" data-f="options" value="${esc(q.options.join(', '))}" style="min-width:160px" ${['select', 'multi'].includes(q.type) ? '' : 'disabled'} aria-label="Choices"></td>
       <td><input type="checkbox" data-f="required" ${q.required ? 'checked' : ''} ${q.type === 'agreement' ? 'disabled' : ''} aria-label="Required"></td>
+      <td><input type="checkbox" data-f="new_only" ${q.new_only ? 'checked' : ''} ${q.scope === 'player' ? '' : 'disabled'} aria-label="New players only"></td>
       <td>${q.scope === 'player' ? programChecks('offering_ids', q.offering_ids) : '<span class="sub">—</span>'}</td>
       <td><input type="checkbox" data-f="active" ${q.active ? 'checked' : ''} aria-label="Asked"></td>
       <td class="num"><input type="number" data-f="sort" value="${q.sort}" style="width:52px" aria-label="Order"></td>
-      <td><button class="mini" data-del>✕</button></td></tr>`).join('') || '<tr><td colspan="9" class="note">No questions yet.</td></tr>'}</table></div>
+      <td><button class="mini" data-del>✕</button></td></tr>`).join('') || '<tr><td colspan="10" class="note">No questions yet.</td></tr>'}</table></div>
   </div></div>
 
   <div class="panel wide"><div class="hd"><h2>Orders</h2><div class="row">
@@ -130,7 +131,7 @@ function rowBody(tr, kind) {
   if (kind === 'o') return { name: f('name').value, description: f('description').value, division_id: f('division_id').value || null, min_age: num('min_age'), max_age: num('max_age'), capacity: num('capacity'), waitlist: f('waitlist').checked, active: f('active').checked };
   if (kind === 'i') return { name: f('name').value, description: f('description').value, price_cents: Math.round(parseFloat(f('price').value || '0') * 100), required: f('required').checked, max_qty: num('max_qty') ?? 1, offering_ids: selVals(f('offering_ids')), tag: f('tag').value, active: f('active').checked };
   return { scope: f('scope').value, label: f('label').value, help: f('help').value, type: f('type').value, options: f('options').value.split(',').map((s) => s.trim()).filter(Boolean),
-    required: f('required').checked, offering_ids: f('offering_ids') ? selVals(f('offering_ids')) : [], active: f('active').checked, sort: num('sort') ?? 0 };
+    required: f('required').checked, offering_ids: f('offering_ids') ? selVals(f('offering_ids')) : [], active: f('active').checked, sort: num('sort') ?? 0, new_only: f('new_only').checked };
 }
 
 $('campSel').onchange = (e) => { CS.id = e.target.value; CS.data = null; loadCampaigns(); };

@@ -20,7 +20,7 @@ import { leagueAge, nameKey, normDate, uid } from './text.js'
 export interface Campaign { id: string; slug: string; name: string; season_id: string | null; status: 'draft' | 'open' | 'closed'; opens_at: string | null; closes_at: string | null; intro: string; confirmation: string; created_at: string }
 export interface Offering { id: string; campaign_id: string; division_id: string | null; name: string; description: string; min_age: number | null; max_age: number | null; capacity: number | null; waitlist: number; sort: number; active: number }
 export interface Item { id: string; campaign_id: string; name: string; description: string; price_cents: number; required: number; max_qty: number; offering_ids: string; tag: string; sort: number; active: number }
-export interface Question { id: string; campaign_id: string; scope: 'player' | 'family'; label: string; help: string; type: QType; options: string; required: number; offering_ids: string; sort: number; active: number }
+export interface Question { id: string; campaign_id: string; scope: 'player' | 'family'; label: string; help: string; type: QType; options: string; required: number; offering_ids: string; sort: number; active: number; new_only: number }
 export type QType = 'text' | 'textarea' | 'number' | 'date' | 'yesno' | 'select' | 'multi' | 'agreement'
 export interface Order { id: string; campaign_id: string; status: 'pending' | 'paid' | 'waitlisted' | 'cancelled' | 'refunded'; guardian: string; answers: string; total_cents: number; stripe_session_id: string | null; stripe_payment_id: string | null; stripe_mode: string | null; created_at: string; paid_at: string | null; se_synced_at: string | null; admin_notes: string }
 export interface OrderPlayer { id: string; order_id: string; first_name: string; last_name: string; birthdate: string; gender: string; offering_id: string; status: 'pending' | 'registered' | 'waitlisted' | 'offered' | 'cancelled'; answers: string; kid_id: string | null; enrollment_id: string | null; offer_session_id: string | null; prior_match: string }
@@ -61,7 +61,11 @@ export function availability(o: Offering): { open: number | null; full: boolean 
   return { open: o.capacity - n, full: n >= o.capacity }
 }
 
-function isOpen(c: Campaign): string | null {
+// An admin may run test checkouts on a draft campaign while Stripe is in test mode, so the form can be tried end to end before families see it.
+const adminTest = (c: Campaign, admin: boolean) => admin && c.status === 'draft' && stripeMode() === 'test'
+
+function isOpen(c: Campaign, admin = false): string | null {
+  if (adminTest(c, admin)) return null
   if (c.status !== 'open') return c.status === 'draft' ? 'Registration hasn’t opened yet.' : 'Registration is closed.'
   const now = new Date().toISOString()
   if (c.opens_at && now < c.opens_at) return `Registration opens ${c.opens_at.slice(0, 10)}.`
@@ -75,13 +79,13 @@ export function publicCampaign(slugStr: string, preview = false) {
   if (!c || (c.status === 'draft' && !preview)) throw new UserError('No registration here')
   const s = ageSeason(c)
   return {
-    campaign: { name: c.name, slug: c.slug, intro: c.intro, closedReason: isOpen(c), year: s.year, ageCutoff: s.age_cutoff },
+    campaign: { name: c.name, slug: c.slug, intro: c.intro, closedReason: isOpen(c, preview), preview: preview && c.status === 'draft', year: s.year, ageCutoff: s.age_cutoff },
     offerings: offerings(c.id).filter((o) => o.active).map((o) => {
       const a = availability(o)
       return { id: o.id, name: o.name, description: o.description, min_age: o.min_age, max_age: o.max_age, full: a.full, waitlist: !!o.waitlist, left: a.open != null && a.open <= 10 ? Math.max(0, a.open) : null }
     }),
     items: items(c.id).filter((i) => i.active).map((i) => ({ id: i.id, name: i.name, description: i.description, price_cents: i.price_cents, required: !!i.required, max_qty: i.max_qty, offering_ids: J<string[]>(i.offering_ids, []) })),
-    questions: questions(c.id).filter((q) => q.active).map((q) => ({ id: q.id, scope: q.scope, label: q.label, help: q.help, type: q.type, options: J<string[]>(q.options, []), required: !!q.required, offering_ids: J<string[]>(q.offering_ids, []) })),
+    questions: questions(c.id).filter((q) => q.active).map((q) => ({ id: q.id, scope: q.scope, label: q.label, help: q.help, type: q.type, options: J<string[]>(q.options, []), required: !!q.required, offering_ids: J<string[]>(q.offering_ids, []), new_only: !!q.new_only })),
     stripe: stripeConfigured() ? stripeMode() : null,
   }
 }
@@ -214,15 +218,15 @@ export function deleteItem(id: string, actor: string) {
   changed()
 }
 
-export interface QuestionInput { scope: 'player' | 'family'; label: string; help?: string; type: QType; options?: string[]; required?: boolean; offering_ids?: string[]; sort?: number; active?: boolean }
+export interface QuestionInput { scope: 'player' | 'family'; label: string; help?: string; type: QType; options?: string[]; required?: boolean; offering_ids?: string[]; sort?: number; active?: boolean; new_only?: boolean }
 export function saveQuestion(campaignId: string, id: string | null, p: QuestionInput, actor: string) {
   const c = mustCampaign(campaignId)
   if (!p.label.trim()) throw new UserError('Question needs a label')
   const opts = (p.options ?? []).map((o) => o.trim()).filter(Boolean)
   if ((p.type === 'select' || p.type === 'multi') && opts.length < 2) throw new UserError('Give at least two choices')
-  const vals = [p.scope, p.label.trim(), p.help ?? '', p.type, JSON.stringify(opts), p.required || p.type === 'agreement' ? 1 : 0, JSON.stringify(p.offering_ids ?? []), p.sort ?? 0, p.active === false ? 0 : 1]
-  if (id) db.prepare('UPDATE questions SET scope=?, label=?, help=?, type=?, options=?, required=?, offering_ids=?, sort=?, active=? WHERE id=? AND campaign_id=?').run(...vals, id, c.id)
-  else db.prepare('INSERT INTO questions (scope, label, help, type, options, required, offering_ids, sort, active, id, campaign_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...vals, uid(), c.id)
+  const vals = [p.scope, p.label.trim(), p.help ?? '', p.type, JSON.stringify(opts), p.required || p.type === 'agreement' ? 1 : 0, JSON.stringify(p.offering_ids ?? []), p.sort ?? 0, p.active === false ? 0 : 1, p.new_only ? 1 : 0]
+  if (id) db.prepare('UPDATE questions SET scope=?, label=?, help=?, type=?, options=?, required=?, offering_ids=?, sort=?, active=?, new_only=? WHERE id=? AND campaign_id=?').run(...vals, id, c.id)
+  else db.prepare('INSERT INTO questions (scope, label, help, type, options, required, offering_ids, sort, active, new_only, id, campaign_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...vals, uid(), c.id)
   audit(actor, 'campaign_question_saved', c.season_id, null, { campaign: c.name, question: p.label })
   changed()
 }
@@ -262,10 +266,10 @@ export interface Quote {
 }
 
 /** Validate a form submission and price it. Throws a family-readable error on anything wrong. */
-export function quote(slugStr: string, inp: CheckoutInput): Quote {
+export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote {
   const c = campaignBySlug(slugStr)
   if (!c) throw new UserError('No registration here')
-  const closed = isOpen(c)
+  const closed = isOpen(c, admin)
   if (closed) throw new UserError(closed)
   const g = inp.guardian
   if (!g.firstName?.trim() || !g.lastName?.trim()) throw new UserError('Parent/guardian name is required')
@@ -320,7 +324,9 @@ export function quote(slugStr: string, inp: CheckoutInput): Quote {
       if (qty) lines.push({ item: it, qty })
     }
     const answers: Record<string, unknown> = {}
-    for (const q of qs.filter((q) => q.scope === 'player' && appliesTo(q.offering_ids, o.id))) { const v = checkAnswer(q, p.answers?.[q.id], name); if (v !== undefined) answers[q.id] = v }
+    // A confirmed returner already told us about their baseball last season.
+    const returner = !!returning && returning !== 'new'
+    for (const q of qs.filter((q) => q.scope === 'player' && appliesTo(q.offering_ids, o.id) && !(q.new_only && returner))) { const v = checkAnswer(q, p.answers?.[q.id], name); if (v !== undefined) answers[q.id] = v }
     out.push({ input: { ...p, birthdate: dob }, returning, offering: o, age, waitlisted, answers, lines })
   }
   const total = out.filter((p) => !p.waitlisted).reduce((a, p) => a + p.lines.reduce((b, l) => b + l.item.price_cents * l.qty, 0), 0)
@@ -328,8 +334,8 @@ export function quote(slugStr: string, inp: CheckoutInput): Quote {
 }
 
 /** Save the order and start Stripe checkout. Returns where to send the family next. */
-export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl: string): Promise<{ orderId: string; url: string }> {
-  const q = quote(slugStr, inp)
+export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl: string, admin = false): Promise<{ orderId: string; url: string }> {
+  const q = quote(slugStr, inp, admin)
   if (q.total > 0 && !stripeConfigured()) throw new UserError('Online payment isn’t set up yet — please try again later')
   const orderId = uid() + uid()
   const allWaitlisted = q.players.every((p) => p.waitlisted)
@@ -581,15 +587,18 @@ export function exportRows(id: string, onlyUnsynced: boolean): (string | number 
 
 export const FAMILY_INTERESTS = ['Head coaching', 'Assistant coaching', 'Being a team mom', 'Sponsoring a capital project at the park — investing in the league’s future']
 
+// All or nothing: one card, prepaid now or paid later — never a quantity.
+export const VALUE_CARD = 'Prepay your $60 fundraiser value card now, or leave this unchecked and pay later.'
+
 /** Seed a new campaign with the usual items and questions so admins start from something, not a blank page. */
 export function seedDefaults(campaignId: string, actor: string) {
   const c = mustCampaign(campaignId)
   if (items(c.id).length || questions(c.id).length) return
   saveItem(c.id, null, { name: 'Registration fee', price_cents: 20000, required: true, sort: 1 }, actor)
-  saveItem(c.id, null, { name: 'Value cards', description: 'Fundraiser value cards, $60 each', price_cents: 6000, max_qty: 10, sort: 2 }, actor)
-  saveItem(c.id, null, { name: 'Volunteer fee', description: 'Pay this instead of volunteering — no turf-maintenance volunteer expectation for this family.', price_cents: 10000, tag: 'volunteer-exempt', sort: 3 }, actor)
-  saveQuestion(c.id, null, { scope: 'player', type: 'select', label: 'Baseball experience', options: ['First season', '1–2 seasons', '3+ seasons', 'Travel / select ball'], required: true, sort: 1 }, actor)
-  saveQuestion(c.id, null, { scope: 'player', type: 'text', label: 'Last team played for (if any)', sort: 2 }, actor)
+  saveItem(c.id, null, { name: 'LFUCG', price_cents: 500, required: true, sort: 2 }, actor)
+  saveItem(c.id, null, { name: 'Value card', description: VALUE_CARD, price_cents: 6000, sort: 3 }, actor)
+  saveQuestion(c.id, null, { scope: 'player', type: 'select', label: 'Baseball experience', options: ['First season', '1–2 seasons', '3+ seasons', 'Travel / select ball'], required: true, new_only: true, sort: 1 }, actor)
+  saveQuestion(c.id, null, { scope: 'player', type: 'text', label: 'Last team played for (if any)', new_only: true, sort: 2 }, actor)
   saveQuestion(c.id, null, { scope: 'player', type: 'select', label: 'Shirt size', options: ['Youth XS', 'Youth S', 'Youth M', 'Youth L', 'Youth XL', 'Adult S', 'Adult M', 'Adult L'], required: true, sort: 3 }, actor)
   saveQuestion(c.id, null, { scope: 'player', type: 'textarea', label: 'Medical conditions or allergies coaches should know about', sort: 4 }, actor)
   saveQuestion(c.id, null, { scope: 'player', type: 'textarea', label: 'Tell us a little about this player', help: 'Positions they like, what they want to work on, anything that helps their coach get to know them', sort: 5 }, actor)

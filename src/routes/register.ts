@@ -76,7 +76,7 @@ register.post('/api/register/:slug/checkout', wrap(async (req, res) => {
   const key = `checkout:${req.ip}`
   if (throttled(key)) return res.status(429).json({ error: 'Too many attempts — please wait a few minutes and try again.' })
   if (!req.is('application/json')) return res.status(415).json({ error: 'json_required' })
-  const out = await C.startCheckout(p(req, 'slug'), checkoutBody.parse(req.body), config.baseUrl)
+  const out = await C.startCheckout(p(req, 'slug'), checkoutBody.parse(req.body), config.baseUrl, !!req.admin)
   noteFailure(key) // counts checkouts started: 8 per 15 minutes per address is plenty for a family
   return out
 }))
@@ -119,7 +119,7 @@ admin.delete('/:id/items/:iid', wrap((req) => { C.deleteItem(p(req, 'iid'), acto
 
 const questionBody = z.object({ scope: z.enum(['player', 'family']), label: z.string().min(1).max(300), help: z.string().max(1000).optional(),
   type: z.enum(['text', 'textarea', 'number', 'date', 'yesno', 'select', 'multi', 'agreement']), options: z.array(z.string().max(200)).max(50).optional(),
-  required: z.boolean().optional(), offering_ids: ids, sort: z.number().int().optional(), active: z.boolean().optional() })
+  required: z.boolean().optional(), offering_ids: ids, sort: z.number().int().optional(), active: z.boolean().optional(), new_only: z.boolean().optional() })
 admin.post('/:id/questions', wrap((req) => { C.saveQuestion(p(req, 'id'), null, questionBody.parse(req.body), actor(req)) }))
 admin.patch('/:id/questions/:qid', wrap((req) => { C.saveQuestion(p(req, 'id'), p(req, 'qid'), questionBody.parse(req.body), actor(req)) }))
 admin.delete('/:id/questions/:qid', wrap((req) => { C.deleteQuestion(p(req, 'qid'), actor(req)) }))

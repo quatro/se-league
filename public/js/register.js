@@ -95,7 +95,14 @@ async function lookupReturning(sec) {
   if (sec._returning && sec._returning !== 'new' && !r.matches.some((m) => m.id === sec._returning)) sec._returning = '';
   renderReturning(sec);
 }
+const isReturner = (sec) => !!sec._returning && sec._returning !== 'new';
 function renderReturning(sec) {
+  const was = isReturner(sec);
+  drawReturning(sec);
+  // No longer a confirmed returner (name changed): bring back the new-player questions.
+  if (was !== isReturner(sec)) { renderPlayer(sec); renderSummary(); }
+}
+function drawReturning(sec) {
   const box = sec.querySelector('.returning'), ms = sec._matches || [];
   const prior = C.campaign.year - 1, name = `returning-${sec.dataset.pid}`;
   const played = (m) => `${esc(m.name)} — ${m.division ? esc(m.division) : 'played'}${m.team ? `, ${esc(m.team)}` : ''} (${m.year})`;
@@ -132,7 +139,8 @@ function renderPlayer(sec) {
         ? `<select data-item="${esc(i.id)}" aria-label="${esc(i.name)} quantity">${Array.from({ length: i.max_qty + 1 }, (_, n) => `<option ${prevQ[i.id] === n ? 'selected' : ''}>${n}</option>`).join('')}</select>`
         : `<input type="checkbox" data-item="${esc(i.id)}" aria-label="Add ${esc(i.name)}" ${prevQ[i.id] ? 'checked' : ''}>`}<span class="price">${money(i.price_cents)}${i.max_qty > 1 ? ' each' : ''}</span></div></div>`).join('') : '';
   // Player questions
-  const qs = offering ? C.questions.filter((q) => q.scope === 'player' && applies(q, offering.id)) : [];
+  // A confirmed returner skips the questions only new players are asked (experience, last team).
+  const qs = offering ? C.questions.filter((q) => q.scope === 'player' && applies(q, offering.id) && !(q.new_only && isReturner(sec))) : [];
   const prevA = Object.fromEntries(qs.map((q) => [q.id, readQuestion(sec, q, `pq-${sec.dataset.pid}-${q.id}`) ?? d.answers?.[q.id]]));
   sec.querySelector('.pqs').innerHTML = qs.map((q) => questionHtml(q, `pq-${sec.dataset.pid}-${q.id}`, prevA[q.id])).join('');
   sec._saved = null;
@@ -212,10 +220,13 @@ async function showDone() {
   const qs = new URLSearchParams(location.search);
   const notes = [];
   if (C.campaign.closedReason) notes.push(C.campaign.closedReason);
+  else if (C.campaign.preview) notes.push('Admin preview: this campaign is still a draft, so families can’t see it yet. Because Stripe is in test mode you can register test players here.');
   if (qs.get('cancelled')) notes.push('Payment was cancelled — nothing was charged. Your answers are still here.');
   if (C.stripe === 'test') notes.push('Test mode: use card 4242 4242 4242 4242, any future date and any CVC. No real money moves.');
   $('notice').hidden = !notes.length; $('notice').innerHTML = notes.map(esc).join('<br>');
   $('submit').disabled = !!C.campaign.closedReason;
+  // Say why right where they're looking (an admin previewing a draft campaign sees this too).
+  if (C.campaign.closedReason) $('payNote').insertAdjacentHTML('beforebegin', `<p class="err-text">${esc(C.campaign.closedReason)}${C.campaign.preview ? ' You’re seeing an admin preview — open the campaign in Signups to take registrations.' : ''}</p>`);
   const fam = C.questions.filter((q) => q.scope === 'family');
   $('familySec').hidden = !fam.length;
   let draft = null;
@@ -235,6 +246,7 @@ async function showDone() {
     if (e.target.matches('[name=first],[name=last],[name=dob]')) lookupReturning(sec);
     if (e.target.matches('[name^="returning-"]')) {
       sec._returning = e.target.value;
+      renderPlayer(sec);
       // Returners usually go back to the program they're expected in; pick it for them.
       const m = sec._matches?.find((x) => x.id === e.target.value);
       const radio = m?.suggestOfferingId && sec.querySelector(`[data-program][value="${CSS.escape(m.suggestOfferingId)}"]`);

@@ -58,10 +58,16 @@ test('setup: 2027 divisions and a campaign built from them', () => {
   assert.deepEqual(C.offerings(cid).map((o) => o.name), ['T-Ball', 'Major/Minor'])
   // A draft campaign is invisible to families and refuses checkouts.
   assert.throws(() => C.publicCampaign('2027-spring'), /No registration here/)
-  assert.equal(C.publicCampaign('2027-spring', true).campaign.closedReason, 'Registration hasn’t opened yet.')
   assert.throws(() => C.quote('2027-spring', { guardian: { firstName: 'P', lastName: 'P', email: 'p@x.co', phone: '5551234567' }, answers: {}, players: [] }), /hasn’t opened/)
   C.saveCampaign(cid, { name: '2027 Spring', status: 'open' }, A)
-  assert.deepEqual(pub().items.map((i) => [i.name, i.price_cents, i.required, i.max_qty]), [['Registration fee', 20000, true, 1], ['Value cards', 6000, false, 10], ['Volunteer fee', 10000, false, 1]])
+  assert.deepEqual(pub().items.map((i) => [i.name, i.price_cents, i.required, i.max_qty]), [['Registration fee', 20000, true, 1], ['LFUCG', 500, true, 1], ['Value card', 6000, false, 1]])
+  // While Stripe is in test mode, an admin can try a draft form end to end; families still can't.
+  const al = family([kid('Al', '2016-03-01', 'Major/Minor')])
+  C.saveCampaign(cid, { name: '2027 Spring', status: 'draft' }, A)
+  assert.equal(C.publicCampaign('2027-spring', true).campaign.closedReason, null)
+  assert.equal(C.quote('2027-spring', al, true).total, 20500)
+  assert.throws(() => C.quote('2027-spring', al), /hasn’t opened/)
+  C.saveCampaign(cid, { name: '2027 Spring', status: 'open' }, A)
 })
 
 test('validation: waiver, required answers, age fit, duplicate kids', () => {
@@ -69,18 +75,18 @@ test('validation: waiver, required answers, age fit, duplicate kids', () => {
   assert.throws(() => C.quote('2027-spring', family([{ ...kid('Al', '2016-03-01', 'Major/Minor'), answers: {} }])), /Baseball experience/)
   assert.throws(() => C.quote('2027-spring', family([kid('Al', '2021-03-01', 'Major/Minor')])), /league age 6.*ages 10–12/)
   assert.throws(() => C.quote('2027-spring', family([kid('Al', '2016-03-01', 'Major/Minor'), kid('Al', '2016-03-01', 'Major/Minor')])), /listed twice/)
-  assert.throws(() => C.quote('2027-spring', family([kid('Al', '2016-03-01', 'Major/Minor', { [item('Value cards')]: 11 })])), /up to 10/)
+  assert.throws(() => C.quote('2027-spring', family([kid('Al', '2016-03-01', 'Major/Minor', { [item('Value card')]: 2 })])), /up to 1/)
 })
 
 test('checkout: fees per kid, required fee forced, Stripe session created', async () => {
   const r = await C.startCheckout('2027-spring', family([
-    kid('Ann', '2016-03-01', 'Major/Minor', { [item('Value cards')]: 3, [item('Volunteer fee')]: 1 }),
+    kid('Ann', '2016-03-01', 'Major/Minor', { [item('Value card')]: 1 }),
     kid('Ben', '2021-03-01', 'T-Ball', { [item('Registration fee')]: 0 }),
   ]), base)
   assert.equal(r.url, 'https://checkout.stripe.com/c/pay/cs_test_1')
   const o = C.order(r.orderId)!
   assert.equal(o.status, 'pending')
-  assert.equal(o.total_cents, 20000 + 18000 + 10000 + 20000)
+  assert.equal(o.total_cents, 20000 + 500 + 6000 + 20000 + 500)
   assert.match(sessions[0]!.body, /line_items\[0\]\[price_data\]\[unit_amount\]=20000/)
   assert.match(sessions[0]!.body, /success_url=https:\/\/league\.test\/register\/2027-spring\/done\?order=/)
   // Nothing is placed until Stripe says it's paid.
@@ -102,7 +108,7 @@ test('payment confirmed: kids are Registered in their division, Major/Minor kids
   assert.equal(enr('Ben Kid').division_id, L.divisionByKey('2027', 'tball')!.id)
   assert.equal((db.prepare(`SELECT COUNT(*) n FROM enrollments WHERE season_id = '2027'`).get() as { n: number }).n, 2)
   const reg = db.prepare(`SELECT * FROM registrations WHERE source = 'web' AND first_name = 'Ann'`).get() as { note: string; outcome: string }
-  assert.match(reg.note, /Value cards ×3, Volunteer fee/)
+  assert.match(reg.note, /LFUCG, Value card$/)
   assert.throws(() => C.quote('2027-spring', family([kid('Ann', '2016-03-01', 'Major/Minor')])), /already registered/)
 })
 
@@ -134,7 +140,7 @@ test('full program: free waitlist, no charge, not draftable; an offered spot reg
   assert.match(sessions.at(-1)!.body, /metadata\[order_player_id\]=/)
   paid(r.orderId, { order_player_id: pid })
   assert.equal(enr('Dee Kid').status, 'Registered')
-  assert.equal(C.order(r.orderId)!.total_cents, 20000)
+  assert.equal(C.order(r.orderId)!.total_cents, 20500)
 })
 
 test('abandoned checkout is cancelled when Stripe expires the session', async () => {
@@ -159,7 +165,8 @@ test('SportsEngine export: one row per kid with purchases and answers; synced fl
   const cal = rows.find((r) => r[4] === 'Cal')!
   assert.equal(cal[h.indexOf('Program')], 'T-Ball')
   assert.equal(cal[h.indexOf('Registration fee')], 1)
-  assert.equal(cal[h.indexOf('Amount paid')], '200.00')
+  assert.equal(cal[h.indexOf('LFUCG')], 1)
+  assert.equal(cal[h.indexOf('Amount paid')], '205.00')
   assert.equal(cal[h.indexOf('Shirt size')], 'Youth M')
   assert.equal(cal[h.indexOf('I agree to the league’s participation waiver and code of conduct')], 'Yes')
   const ids = C.adminCampaign(cid).orders.filter((o) => o.status === 'paid').map((o) => o.id)
@@ -205,7 +212,10 @@ test('returning players: matched from last season, confirmed by the family, kept
 
   const kids = () => (db.prepare('SELECT COUNT(*) n FROM kids').get() as { n: number }).n
   const n0 = kids()
-  const r = await C.startCheckout('2027-spring', family([{ ...samP, returning: sam.id }]), base)
+  // A confirmed returner isn't asked the new-player questions (baseball experience, last team).
+  const noExp = { ...samP, answers: { [q('Shirt size')]: 'Youth M' } }
+  assert.throws(() => C.quote('2027-spring', family([{ ...noExp, returning: 'new' }])), /Baseball experience/)
+  const r = await C.startCheckout('2027-spring', family([{ ...noExp, returning: sam.id }]), base)
   paid(r.orderId)
   assert.equal(kids(), n0, 'no duplicate kid')
   assert.equal(L.kid(sam.id)!.birthdate, '2015-05-01', 'the birthdate is learned for next year')

@@ -311,3 +311,5 @@ function addColumn(table: string, column: string, ddl: string) {
 // What the family said about last year's player: a kid id (yes, that's them),
 // 'new' (no, not them), or '' (no one matched).
 addColumn('order_players', 'prior_match', `TEXT NOT NULL DEFAULT ''`)
+// 1 = only asked of players new to the league; skipped once a family confirms last season's player.
+addColumn('questions', 'new_only', `INTEGER NOT NULL DEFAULT 0`)
