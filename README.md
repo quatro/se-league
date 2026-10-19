@@ -111,6 +111,11 @@ Spring", a summer team, a fall league. Each campaign has:
   optional, with a quantity picker when Max is above 1, and can be limited to
   certain programs. A tag (e.g. `volunteer-exempt`) follows the purchase onto
   the kid's record.
+- **Returning players.** Once a player's name and birthdate are in, the form
+  looks for them on last season's rosters (same name, or same birthdate and
+  last name; for older records without a birthdate, the age has to fit). The
+  family confirms "Yes, that's them" or "No, new player", so the registration
+  lands on the kid's existing record and their birthdate is saved for next year.
 - **Questions,** either per player or once per family. Types are short answer,
   paragraph, number, date, yes/no, pick one, pick any, and an agreement the
   family must tick (the waiver).

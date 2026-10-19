@@ -69,13 +69,44 @@ function playerCard(d = {}) {
       <label>Birthdate<input type="date" name="dob" value="${esc(d.birthdate)}" required><small class="agehint"></small></label>
       <label>Gender<select name="gender"><option value="">Choose…</option>${['Boy', 'Girl'].map((g) => `<option ${d.gender === g ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
     </div>
+    <div class="returning" aria-live="polite"></div>
     <div class="programs"></div>
     <div class="items"></div>
     <div class="qs pqs"></div>`;
   sec._saved = d;
+  sec._returning = d.returning || '';
   $('players').append(sec);
   renderPlayer(sec);
+  lookupReturning(sec);
   return sec;
+}
+
+/* Did this player play last season? Look them up once the name and birthdate are in,
+   and have the family confirm it's the same kid (or say they're new). */
+async function lookupReturning(sec) {
+  const first = sec.querySelector('[name=first]').value.trim(), last = sec.querySelector('[name=last]').value.trim(), dob = sec.querySelector('[name=dob]').value;
+  const key = `${first}|${last}|${dob}`;
+  if (key === sec._lookedUp) return;
+  sec._lookedUp = key;
+  if (!first || !last || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) { sec._matches = []; return renderReturning(sec); }
+  const r = await call('GET', `/api/register/${encodeURIComponent(slug)}/returning?${new URLSearchParams({ first, last, dob })}`).catch(() => ({ matches: [] }));
+  if (sec._lookedUp !== key) return; // they kept typing
+  sec._matches = r.matches;
+  if (sec._returning && sec._returning !== 'new' && !r.matches.some((m) => m.id === sec._returning)) sec._returning = '';
+  renderReturning(sec);
+}
+function renderReturning(sec) {
+  const box = sec.querySelector('.returning'), ms = sec._matches || [];
+  const prior = C.campaign.year - 1, name = `returning-${sec.dataset.pid}`;
+  const played = (m) => `${esc(m.name)} — ${m.division ? esc(m.division) : 'played'}${m.team ? `, ${esc(m.team)}` : ''} (${m.year})`;
+  if (!ms.length) {
+    sec._returning = '';
+    box.innerHTML = sec._lookedUp && sec._lookedUp.split('|').every(Boolean) ? `<p class="note">New player — welcome! We didn’t find them on a ${prior} roster.</p>` : '';
+    return;
+  }
+  box.innerHTML = `<fieldset class="choice returnbox"><legend>${ms.length === 1 ? `Is this the player who played in ${prior}?` : `Which player played in ${prior}?`} <span aria-hidden="true" style="color:var(--stitch)">*</span></legend>
+    ${ms.map((m) => `<label><input type="radio" name="${name}" value="${esc(m.id)}" ${sec._returning === m.id ? 'checked' : ''}> <span>Yes — ${played(m)}</span></label>`).join('')}
+    <label><input type="radio" name="${name}" value="new" ${sec._returning === 'new' ? 'checked' : ''}> <span>No — this is a new player</span></label></fieldset>`;
 }
 function renderPlayer(sec) {
   const d = sec._saved || {};
@@ -112,7 +143,7 @@ function readPlayer(sec) {
   sec.querySelectorAll('[data-item]').forEach((el) => (items[el.dataset.item] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : +el.value));
   for (const q of C.questions.filter((q) => q.scope === 'player')) { const v = readQuestion(sec, q, `pq-${sec.dataset.pid}-${q.id}`); if (v !== undefined) answers[q.id] = v; }
   return { firstName: sec.querySelector('[name=first]').value.trim(), lastName: sec.querySelector('[name=last]').value.trim(), birthdate: sec.querySelector('[name=dob]').value,
-    gender: sec.querySelector('[name=gender]').value, offeringId, items, answers };
+    gender: sec.querySelector('[name=gender]').value, offeringId, items, answers, returning: sec._returning || undefined };
 }
 function readForm() {
   const f = $('form'), v = (n) => f.elements[n].value.trim();
@@ -201,6 +232,14 @@ async function showDone() {
   $('players').addEventListener('change', (e) => {
     const sec = e.target.closest('.player');
     if (e.target.matches('[name=dob],[data-program],[name=first]')) renderPlayer(sec);
+    if (e.target.matches('[name=first],[name=last],[name=dob]')) lookupReturning(sec);
+    if (e.target.matches('[name^="returning-"]')) {
+      sec._returning = e.target.value;
+      // Returners usually go back to the program they're expected in; pick it for them.
+      const m = sec._matches?.find((x) => x.id === e.target.value);
+      const radio = m?.suggestOfferingId && sec.querySelector(`[data-program][value="${CSS.escape(m.suggestOfferingId)}"]`);
+      if (radio && !sec.querySelector('[data-program]:checked')) { radio.checked = true; renderPlayer(sec); }
+    }
     renderSummary();
   });
   $('players').addEventListener('input', (e) => { if (e.target.matches('[name=first]')) e.target.closest('.player').querySelector('.ptitle').textContent = e.target.value || 'Player'; });
@@ -208,6 +247,8 @@ async function showDone() {
   $('form').onsubmit = async (e) => {
     e.preventDefault();
     $('err').textContent = '';
+    const unsure = [...document.querySelectorAll('.player')].find((sec) => sec._matches?.length && !sec._returning);
+    if (unsure) { $('err').textContent = `${unsure.querySelector('[name=first]').value.trim() || 'A player'}: tell us whether this is the player who played in ${C.campaign.year - 1}.`; unsure.querySelector('.returning input')?.focus(); return; }
     $('submit').disabled = true;
     try {
       const r = await call('POST', `/api/register/${encodeURIComponent(slug)}/checkout`, readForm());

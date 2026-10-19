@@ -174,3 +174,51 @@ test('Stripe webhook signatures', () => {
   assert.equal(verifyStripeSignature(raw, `t=${t},v1=${sig}`, 'whsec_other'), false)
   assert.equal(verifyStripeSignature(raw, `t=${t - 600},v1=${sig}`, 'whsec_test'), false)
 })
+
+test('returning players: matched from last season, confirmed by the family, kept on one record', async () => {
+  // 2026: the only records are names without birthdates (like the imported Majors rosters).
+  db.prepare(`INSERT INTO seasons (id, year, status) VALUES ('2026', 2026, 'complete')`).run()
+  const maj26 = L.saveDivision('2026', null, { key: 'majors', name: 'Majors', teams: 1, roster_size: 12, min_age: 10, max_age: 12 }, A)
+  const astros = L.saveTeam(L.divisionByKey('2026', 'majors')!.id, null, { name: 'Astros' }, A)
+  void maj26
+  const sam = L.createKid('Sam Old', null)
+  L.enroll('2026', sam.id, { divisionId: L.divisionByKey('2026', 'majors')!.id, teamId: astros.id, status: 'Registered' }, A)
+  const will = L.createKid('Will Dob', '2015-02-02')
+  L.enroll('2026', will.id, { divisionId: L.divisionByKey('2026', 'majors')!.id, teamId: astros.id, status: 'Registered' }, A)
+  const tom = L.createKid('Tom Twin', null)
+  L.enroll('2026', tom.id, { divisionId: L.divisionByKey('2026', 'majors')!.id, teamId: astros.id, status: 'Registered' }, A)
+  // Sam is expected back on his Majors team in 2027.
+  L.enroll('2027', sam.id, { divisionId: L.divisionByKey('2027', 'majors')!.id, returner: true }, A)
+  const c = C.mustCampaign(cid)
+
+  const m = C.returningMatches(c, 'Sam', 'Old', '2015-05-01')
+  assert.deepEqual(m.map((x) => [x.name, x.division, x.team, x.year]), [['Sam Old', 'Majors', 'Astros', 2026]])
+  assert.equal(m[0]!.suggestOfferingId, off('Major/Minor'))
+  assert.deepEqual(C.returningMatches(c, 'Sam', 'Old', '2020-05-01'), [], 'a 5-year-old Sam Old is not the 2026 Majors player')
+  assert.deepEqual(C.returningMatches(c, 'William', 'Dob', '2015-02-02').map((x) => x.name), ['Will Dob'], 'same birthdate + last name')
+  assert.deepEqual(C.returningMatches(c, 'Will', 'Dob', '2015-02-03'), [], 'a recorded birthdate has to match')
+  assert.deepEqual(C.returningMatches(c, 'Newbie', 'Kid', '2015-05-01'), [])
+
+  const samP = { ...kid('Sam', '2015-05-01', 'Major/Minor'), lastName: 'Old' }
+  assert.throws(() => C.quote('2027-spring', family([samP])), /played in 2026/)
+  assert.throws(() => C.quote('2027-spring', family([{ ...samP, returning: tom.id }])), /re-check/)
+
+  const kids = () => (db.prepare('SELECT COUNT(*) n FROM kids').get() as { n: number }).n
+  const n0 = kids()
+  const r = await C.startCheckout('2027-spring', family([{ ...samP, returning: sam.id }]), base)
+  paid(r.orderId)
+  assert.equal(kids(), n0, 'no duplicate kid')
+  assert.equal(L.kid(sam.id)!.birthdate, '2015-05-01', 'the birthdate is learned for next year')
+  const e = db.prepare(`SELECT * FROM enrollments WHERE season_id = '2027' AND kid_id = ?`).get(sam.id) as L.Enrollment
+  assert.equal(e.status, 'Registered')
+  assert.equal(L.kidHistory(sam.id).seasons.length, 2)
+  assert.deepEqual(C.returningMatches(c, 'Sam', 'Old', '2016-05-01'), [], 'now that we know his birthdate, a different one doesn’t match')
+
+  // "No, that's not my kid": a new record, never merged into the 2026 Tom.
+  const t = await C.startCheckout('2027-spring', family([{ ...kid('Tom', '2015-07-07', 'Major/Minor'), lastName: 'Twin', returning: 'new' }]), base)
+  paid(t.orderId)
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM kids WHERE name_key = 'tom twin'`).get() as { n: number }).n, 2)
+  assert.equal(L.kid(tom.id)!.birthdate, null)
+  const row = C.exportRows(cid, false).find((x) => x[4] === 'Tom')!
+  assert.equal(row[C.exportRows(cid, false)[0]!.indexOf('Played last season')], 'No (family said new)')
+})

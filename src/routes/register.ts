@@ -45,6 +45,20 @@ const actor = (req: Request) => req.admin?.username ?? 'unknown'
 // ---------- public ----------
 register.get('/api/register/:slug', wrap((req) => C.publicCampaign(p(req, 'slug'), !!req.admin)))
 
+// "Did this player play last year?" Runs as families type, so it has its own, looser limit.
+const lookups = new Map<string, { n: number; until: number }>()
+register.get('/api/register/:slug/returning', wrap((req, res) => {
+  const now = Date.now(), a = lookups.get(req.ip ?? '')
+  const fresh = !a || a.until < now
+  lookups.set(req.ip ?? '', { n: fresh ? 1 : a!.n + 1, until: fresh ? now + 15 * 60e3 : a!.until })
+  if (!fresh && a!.n >= 120) return res.status(429).json({ error: 'Too many lookups — please wait a few minutes.' })
+  if (lookups.size > 5000) for (const [k, v] of lookups) if (v.until < now) lookups.delete(k)
+  const c = C.campaignBySlug(p(req, 'slug'))
+  if (!c || (c.status === 'draft' && !req.admin)) throw new UserError('No registration here')
+  const q = (k: string) => String(req.query[k] ?? '').slice(0, 80)
+  return { matches: C.returningMatches(c, q('first'), q('last'), q('dob')) }
+}))
+
 const answer = z.union([z.string().max(4000), z.number(), z.boolean(), z.array(z.string().max(200)).max(50), z.null()])
 const checkoutBody = z.object({
   guardian: z.object({
@@ -55,6 +69,7 @@ const checkoutBody = z.object({
   players: z.array(z.object({
     firstName: z.string().max(80), lastName: z.string().max(80), birthdate: z.string().max(20), gender: z.string().max(20).optional(),
     offeringId: z.string().max(40), items: z.record(z.string(), z.number().int().min(0).max(99)).default({}), answers: z.record(z.string(), answer).default({}),
+    returning: z.string().max(40).optional(),
   })).max(8),
 })
 register.post('/api/register/:slug/checkout', wrap(async (req, res) => {

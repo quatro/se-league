@@ -220,3 +220,9 @@ dialog form,dialog .dlg{padding:16px;display:grid;gap:10px}
 .sumtable tr.total td{font-weight:800;font-size:1.1rem;border-bottom:0;padding-top:8px}
 .pill{display:inline-block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:1px 7px;border-radius:999px;border:1px solid currentColor}
 .pill.wait{color:var(--warn)}
+.returnbox{display:grid;gap:8px;margin:12px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.returnbox legend{font-weight:600;font-size:.92rem;padding:0 4px}
+.returnbox label{display:flex;gap:8px;align-items:flex-start;font-weight:500}
+.player .returning .note{margin:8px 0 0}
+/* Long interest options read better one per line. */
+#familyQs .choice{flex-direction:column;align-items:flex-start}

@@ -114,7 +114,7 @@ function renderOrders() {
   $('ordTable').innerHTML = '<tr><th>When (UTC)</th><th>Family</th><th>Players</th><th class="num">Paid</th><th>Status</th><th title="Entered in SportsEngine">In SE</th><th>Notes</th></tr>'
     + (os.length ? os.map((o) => `<tr data-ord="${esc(o.id)}"><td class="sub">${esc(o.created_at)}</td>
       <td><b>${esc(`${o.guardian.firstName} ${o.guardian.lastName}`)}</b><div class="sub">${esc(o.guardian.email)} · ${esc(o.guardian.phone)}</div></td>
-      <td>${o.players.map((p) => `<div><button class="mini" ${p.kid_id ? `data-kid="${esc(p.kid_id)}"` : 'disabled'} style="border:0;background:none;padding:0;font-weight:600">${esc(p.first_name)} ${esc(p.last_name)}</button> — ${esc(p.program)} · ${esc(p.status)}
+      <td>${o.players.map((p) => `<div><button class="mini" ${p.kid_id ? `data-kid="${esc(p.kid_id)}"` : 'disabled'} style="border:0;background:none;padding:0;font-weight:600">${esc(p.first_name)} ${esc(p.last_name)}</button>${p.prior_match === 'new' ? ' <span class="sub">new</span>' : p.prior_match ? ' <span class="sub">returning</span>' : ''} — ${esc(p.program)} · ${esc(p.status)}
         ${p.lines.length ? `<span class="sub">(${p.lines.map((l) => `${esc(l.name)}${l.qty > 1 ? ` ×${l.qty}` : ''}`).join(', ')})</span>` : ''}
         ${['waitlisted', 'offered'].includes(p.status) ? `<button class="mini" data-offer="${esc(p.id)}">${p.status === 'offered' ? 'New payment link' : 'Offer the spot'}</button>` : ''}</div>`).join('')}</td>
       <td class="num">${dollars(o.total_cents)}${o.stripe_mode === 'test' ? ' <span class="tag">test</span>' : ''}</td>

@@ -302,3 +302,12 @@ CREATE TABLE IF NOT EXISTS order_lines (
   charged         INTEGER NOT NULL DEFAULT 1   -- 0 = waitlisted kid, not charged yet
 );
 `)
+
+// Columns added after a table first shipped.
+function addColumn(table: string, column: string, ddl: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+}
+// What the family said about last year's player: a kid id (yes, that's them),
+// 'new' (no, not them), or '' (no one matched).
+addColumn('order_players', 'prior_match', `TEXT NOT NULL DEFAULT ''`)
