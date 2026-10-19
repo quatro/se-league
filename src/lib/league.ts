@@ -276,7 +276,8 @@ function groupChain(seasonId: string, groupKey: string): Draft[] {
  * (Minors). A 9-year-old trying out joins the group that fits their age.
  */
 export function poolFor(e: Enrollment, s: Season, birthdate: string | null): string | null {
-  if (e.team_id || OUT.includes(e.status) || !e.division_id) return null
+  // Waitlisted kids haven't got a seat yet, so they aren't draftable.
+  if (e.team_id || OUT.includes(e.status) || e.status === 'Waitlist' || !e.division_id) return null
   const home = division(e.division_id)
   if (!home) return null
   const own = draftFor(home.id)
@@ -455,13 +456,21 @@ export function seasonState(seasonId: string, isAdmin: boolean) {
     unplaced: ps.filter((p) => !p.eff_division_id && !OUT.includes(p.status)).length,
   }
   if (!isAdmin) return base
+  // What each kid bought at registration (e.g. the volunteer fee), from paid signups.
+  const bought = new Map<string, string[]>()
+  for (const r of db.prepare(`SELECT op.enrollment_id, ol.name, ol.qty, ol.tag FROM order_lines ol JOIN order_players op ON op.id = ol.order_player_id
+    JOIN enrollments e ON e.id = op.enrollment_id WHERE e.season_id = ? AND ol.charged = 1 AND op.status = 'registered'`).all(seasonId) as { enrollment_id: string; name: string; qty: number; tag: string }[]) {
+    const list = bought.get(r.enrollment_id) ?? []
+    list.push(`${r.name}${r.qty > 1 ? ` ×${r.qty}` : ''}${r.tag ? ` [${r.tag}]` : ''}`)
+    bought.set(r.enrollment_id, list)
+  }
   return {
     ...base,
     kids: ps.map((p) => {
       const k = kids.get(p.kid_id)!
       return {
         ...p, name: k.name, birthdate: k.birthdate, se_profile_id: k.se_profile_id, kid_notes: k.notes,
-        league_age: ageIn(s, k.birthdate, p.age),
+        league_age: ageIn(s, k.birthdate, p.age), bought: bought.get(p.id) ?? [],
       }
     }),
     openRegistrations: (db.prepare(`SELECT COUNT(*) AS n FROM registrations WHERE outcome IN ('no_division','ambiguous','error','pending')`).get() as { n: number }).n,
@@ -490,3 +499,6 @@ export function kidHistory(kidId: string) {
 }
 
 export { HOLDS_SEAT }
+
+/** Campaign web addresses: /register/<slug>. */
+export const slugOk = (s: string) => /^[a-z0-9][a-z0-9-]{1,59}$/.test(s)

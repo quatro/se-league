@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Registration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700;800&family=Public+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<main class="reg" id="app">
+  <header class="top">
+    <h1><small id="league">SE Baseball</small><span id="title">Registration</span></h1>
+  </header>
+  <p class="meta" id="loading">Loading…</p>
+
+  <!-- FORM -->
+  <form id="form" hidden novalidate>
+    <div class="banner" id="notice" hidden></div>
+    <div class="intro" id="intro"></div>
+
+    <section class="regsec">
+      <h2>Parent or guardian</h2>
+      <div class="fields">
+        <label>First name<input type="text" name="gFirst" autocomplete="given-name" required></label>
+        <label>Last name<input type="text" name="gLast" autocomplete="family-name" required></label>
+        <label>Email<input type="email" name="gEmail" autocomplete="email" required><small>Your receipt goes here.</small></label>
+        <label>Mobile phone<input type="tel" name="gPhone" autocomplete="tel" required></label>
+        <label class="wide">Street address<input type="text" name="gAddress" autocomplete="street-address"></label>
+        <label>City<input type="text" name="gCity" autocomplete="address-level2"></label>
+        <label>State<input type="text" name="gState" autocomplete="address-level1" maxlength="20"></label>
+        <label>ZIP<input type="text" name="gZip" autocomplete="postal-code" inputmode="numeric" maxlength="10"></label>
+      </div>
+    </section>
+
+    <div id="players"></div>
+    <p><button type="button" class="linkbtn" id="addPlayer">+ Register another player</button></p>
+
+    <section class="regsec" id="familySec" hidden>
+      <h2>Your family</h2>
+      <div id="familyQs" class="qs"></div>
+    </section>
+
+    <section class="regsec summary">
+      <h2>Summary</h2>
+      <div id="summary"></div>
+      <p class="err-text" id="err" role="alert"></p>
+      <button type="submit" class="btn primary big" id="submit">Continue to payment</button>
+      <p class="note" id="payNote">You'll pay securely on Stripe's checkout page. Nothing is charged until you finish there.</p>
+    </section>
+  </form>
+
+  <!-- DONE -->
+  <section id="done" hidden></section>
+</main>
+<script src="/js/register.js"></script>
+</body>
+</html>

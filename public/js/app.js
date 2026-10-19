@@ -61,12 +61,13 @@ function render() {
   // Admin tabs hold inputs; don't rebuild under someone's cursor. Re-render on blur instead.
   const ae = document.activeElement;
   const typing = ae?.closest?.('section') && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'checkbox' && ae.type !== 'file';
-  if (typing && ['kids', 'divisions', 'regs', 'seasons'].includes(S.tab)) { S.pendingRender = true; return; }
+  if (typing && ['kids', 'divisions', 'regs', 'seasons', 'campaigns'].includes(S.tab)) { S.pendingRender = true; return; }
   if (S.tab === 'kids') renderKids();
   if (S.tab === 'divisions') renderDivisions();
   if (S.tab === 'regs') renderRegs();
   if (S.tab === 'seasons') renderSeasons();
   if (S.tab === 'log') renderLog();
+  if (S.tab === 'campaigns') loadCampaigns(); // campaigns.js
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (S.pendingRender && !document.activeElement?.closest?.('section')) { S.pendingRender = false; render(); } }, 0));
 $('seasonSel').onchange = (e) => { S.sid = e.target.value; S.sel.clear(); try { localStorage.setItem('league-season', S.sid); } catch { /* private */ } refresh(); if (S.tab === 'log') loadLog(); };
@@ -265,7 +266,7 @@ function renderKids() {
         <td><input type="checkbox" data-f="locked" ${k.status_locked ? 'checked' : ''} aria-label="Lock status"></td>
         <td>${canTryout(k) ? `<input type="checkbox" data-f="tryout" ${k.tryout ? 'checked' : ''} aria-label="Trying out">` : k.tryout ? '✓' : ''}</td>
         <td>${pool}</td>
-        <td><input type="text" data-f="notes" value="${esc(k.notes)}" style="min-width:150px" aria-label="Notes"></td>
+        <td><input type="text" data-f="notes" value="${esc(k.notes)}" style="min-width:150px" aria-label="Notes">${k.bought?.length ? `<div class="tag" title="Bought at registration">${esc(k.bought.join(' · '))}</div>` : ''}</td>
         <td><button class="mini" data-del>Remove</button></td></tr>`;
     }).join('') : `<tr><td colspan="13" class="note">No kids match.</td></tr>`);
   renderMoveBar();
@@ -511,7 +512,7 @@ $('logRefresh').onclick = loadLog;
 $('logTable').onclick = (e) => { const kb = e.target.closest('[data-kid]'); if (kb) showKid(kb.dataset.kid); };
 
 /* ---------- tabs ---------- */
-const VIEWS = ['seats', 'drafts', 'kids', 'regs', 'divisions', 'seasons', 'log'];
+const VIEWS = ['seats', 'drafts', 'kids', 'campaigns', 'regs', 'divisions', 'seasons', 'log'];
 function setTab(t) {
   const btn = document.querySelector(`[data-tab="${t}"]`);
   if (!btn || (btn.hasAttribute('data-admin') && !isAdmin())) t = 'seats';

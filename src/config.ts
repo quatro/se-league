@@ -23,6 +23,12 @@ export const config = {
   //   2027majordraft.crushworldseries.com=2027/majors
   draftHosts: Object.fromEntries((env.DRAFT_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean)
     .map((s) => s.split('=').map((x) => x.trim()) as [string, string])),
+  stripe: {
+    secretKey: env.STRIPE_SECRET_KEY || '',
+    webhookSecret: env.STRIPE_WEBHOOK_SECRET || '',
+    // Only for local testing against a fake; production always talks to Stripe.
+    apiBase: (env.STRIPE_API_BASE || 'https://api.stripe.com').replace(/\/$/, ''),
+  },
   sportsengine: {
     token: env.SPORTSENGINE_WEBHOOK_TOKEN || '',
     secret: env.SPORTSENGINE_WEBHOOK_SECRET || '',

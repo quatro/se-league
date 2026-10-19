@@ -71,6 +71,8 @@ Draft-room hostnames come from `DRAFT_HOSTS` (e.g.
 `2027majordraft.crushworldseries.com=2027/majors`). Point that site's nginx at
 port 3040 with `sudo bash cutover-draft-domain.sh`.
 
+Registration campaigns (Signups tab): see "Registration" below.
+
 `scripts/migrate.ts` was the one-time import from the first two apps
 (se-draft-board, se-registration).
 
@@ -93,3 +95,52 @@ places them by the program the family picked, matched against each division's
 The payload mapping in `src/lib/sepayload.ts` is a tolerant guess until real
 deliveries arrive. Every delivery is stored raw, so you can tighten the
 mapping, rebuild, and use **Re-run placement on open items**.
+
+## Registration
+
+The **Signups** tab builds a registration campaign for each session: "2027
+Spring", a summer team, a fall league. Each campaign has:
+
+- **A public form** at `/register/<slug>`. Draft campaigns are visible only to
+  admins, through the Preview button.
+- **Programs.** Usually the season's divisions. Majors + Minors is one
+  "Major/Minor" program that counts both leagues' seats. A standalone program
+  has its own ages and cap. Families only see programs their player's league
+  age fits. A full program offers a **free waitlist**.
+- **Fees and add-ons, charged per player.** Each is either required or
+  optional, with a quantity picker when Max is above 1, and can be limited to
+  certain programs. A tag (e.g. `volunteer-exempt`) follows the purchase onto
+  the kid's record.
+- **Questions,** either per player or once per family. Types are short answer,
+  paragraph, number, date, yes/no, pick one, pick any, and an agreement the
+  family must tick (the waiver).
+
+Payment uses Stripe Checkout. The moment Stripe confirms, each kid is
+Registered in their division:
+
+- Expected returners flip to Registered.
+- New 10–12 kids join the Majors tryout pool.
+- Seat counts and drafts update.
+
+The thank-you page also asks Stripe directly, so a missing webhook never leaves
+a paid family unregistered.
+
+- **Abandoned checkouts** are cancelled when Stripe expires them.
+- **Refunds** made in Stripe are flagged on the order, and an admin decides
+  whether to withdraw the kid.
+- **Waitlisted kids** cost nothing until an admin clicks **Offer the spot**,
+  which makes a payment link to send to the family.
+
+**SportsEngine:** export one row per player with the parent's details, every
+purchase and every answer. After entering them, tick **In SE**, or use **Mark
+shown as in SportsEngine**, so the next "not yet in SportsEngine" export only
+has new families.
+
+To set up Stripe:
+
+1. Put `STRIPE_SECRET_KEY` in `.env` (`sk_test_…` first).
+2. Run `pnpm tsx scripts/stripe-webhook.ts`.
+3. Run `systemctl --user restart se-league`.
+
+To go live, swap in the `sk_live_…` key and repeat steps 2 and 3. Test-mode
+orders are labelled "test".

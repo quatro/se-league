@@ -188,3 +188,35 @@ dialog form,dialog .dlg{padding:16px;display:grid;gap:10px}
 .hist{width:100%;border-collapse:collapse}
 .hist td,.hist th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
 .group{border-top-style:dashed}
+
+/* ---- public registration form ---- */
+.reg{max-width:760px;margin:0 auto;padding-block:16px 60px;display:grid;gap:16px}
+.reg .intro{white-space:pre-line}
+.regsec{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px;display:grid;gap:12px}
+.regsec>h2{display:flex;align-items:center;gap:8px}
+.regsec .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.regsec label{display:grid;gap:4px;font-weight:600;font-size:.88rem}
+.regsec label small{font-weight:400;color:var(--muted)}
+.regsec .wide{grid-column:1/-1}
+@media (max-width:560px){.regsec .fields{grid-template-columns:minmax(0,1fr)}}
+.reg input[type=email],.reg input[type=tel],.reg input[type=text],.reg input[type=date],.reg input[type=number],.reg select,.reg textarea{padding:9px 10px;font-size:1rem}
+.programs{display:grid;gap:8px}
+.programs label{display:flex;gap:10px;align-items:flex-start;font-weight:500;border:1px solid var(--line);border-radius:6px;padding:10px 12px;cursor:pointer}
+.programs label:has(input:checked){border-color:var(--blue);background:color-mix(in srgb,var(--blue) 8%,var(--card))}
+.programs label b{display:block}
+.itemrow{display:flex;gap:12px;align-items:center;justify-content:space-between;border-bottom:1px dashed var(--line);padding:8px 0}
+.itemrow:last-child{border-bottom:0}
+.itemrow .price{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.itemrow select{width:auto}
+.qs{display:grid;gap:12px}
+.qs .choice{display:flex;flex-wrap:wrap;gap:6px 14px;font-weight:500}
+.qs .choice label{display:flex;gap:6px;align-items:center;font-weight:500}
+.qs .agree{display:flex;gap:8px;align-items:flex-start;font-weight:500}
+.linkbtn{background:none;border:0;color:var(--blue);font-weight:700;padding:0;font-size:1rem}
+.btn.big{font-size:1.05rem;padding:12px 18px;justify-self:start}
+.sumtable{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.sumtable td{padding:4px 0;border-bottom:1px solid var(--line)}
+.sumtable td:last-child{text-align:right}
+.sumtable tr.total td{font-weight:800;font-size:1.1rem;border-bottom:0;padding-top:8px}
+.pill{display:inline-block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:1px 7px;border-radius:999px;border:1px solid currentColor}
+.pill.wait{color:var(--warn)}

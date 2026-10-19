@@ -194,4 +194,111 @@ CREATE TABLE IF NOT EXISTS audit (
   detail    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS audit_kid ON audit(kid_id);
+
+-- Registration campaigns: our own signup + Stripe checkout ("2027 Spring",
+-- a summer team, a fall league...). Each has programs (usually a season's
+-- divisions), priced items, and extra questions, all built in admin.
+CREATE TABLE IF NOT EXISTS campaigns (
+  id           TEXT PRIMARY KEY,
+  slug         TEXT NOT NULL UNIQUE,         -- /register/<slug>
+  name         TEXT NOT NULL,
+  season_id    TEXT REFERENCES seasons(id) ON DELETE SET NULL,
+  status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','open','closed')),
+  opens_at     TEXT,                         -- optional ISO timestamps
+  closes_at    TEXT,
+  intro        TEXT NOT NULL DEFAULT '',     -- shown at the top of the form
+  confirmation TEXT NOT NULL DEFAULT '',     -- shown after payment
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- What a family can sign a kid up for. A league program points at a season
+-- division (Majors + Minors share one program pointing at Minors, the home of
+-- the 10–12 pool); a standalone one (a summer team) has its own ages and cap.
+CREATE TABLE IF NOT EXISTS offerings (
+  id          TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  division_id TEXT REFERENCES divisions(id) ON DELETE SET NULL,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  min_age     INTEGER,
+  max_age     INTEGER,
+  capacity    INTEGER,                        -- standalone only; league programs use division seats
+  waitlist    INTEGER NOT NULL DEFAULT 1,     -- 1 = free waitlist when full, 0 = hide when full
+  sort        INTEGER NOT NULL DEFAULT 0,
+  active      INTEGER NOT NULL DEFAULT 1
+);
+
+-- Priced items charged per kid: the registration fee, value cards, a volunteer buyout...
+CREATE TABLE IF NOT EXISTS items (
+  id          TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+  required    INTEGER NOT NULL DEFAULT 0,
+  max_qty     INTEGER NOT NULL DEFAULT 1,     -- >1 lets families buy several (value cards)
+  offering_ids TEXT NOT NULL DEFAULT '[]',    -- JSON; empty = every program
+  tag         TEXT NOT NULL DEFAULT '',       -- e.g. 'volunteer-exempt', copied onto what the kid bought
+  sort        INTEGER NOT NULL DEFAULT 0,
+  active      INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS questions (
+  id           TEXT PRIMARY KEY,
+  campaign_id  TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  scope        TEXT NOT NULL DEFAULT 'player' CHECK (scope IN ('player','family')),
+  label        TEXT NOT NULL,
+  help         TEXT NOT NULL DEFAULT '',
+  type         TEXT NOT NULL CHECK (type IN ('text','textarea','number','date','yesno','select','multi','agreement')),
+  options      TEXT NOT NULL DEFAULT '[]',    -- JSON list for select / multi
+  required     INTEGER NOT NULL DEFAULT 0,
+  offering_ids TEXT NOT NULL DEFAULT '[]',
+  sort         INTEGER NOT NULL DEFAULT 0,
+  active       INTEGER NOT NULL DEFAULT 1
+);
+
+-- One checkout. Stays 'pending' until Stripe confirms payment.
+CREATE TABLE IF NOT EXISTS orders (
+  id                TEXT PRIMARY KEY,
+  campaign_id       TEXT NOT NULL REFERENCES campaigns(id),
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','waitlisted','cancelled','refunded')),
+  guardian          TEXT NOT NULL,            -- JSON: name, email, phone, address
+  answers           TEXT NOT NULL DEFAULT '{}',
+  total_cents       INTEGER NOT NULL DEFAULT 0,
+  stripe_session_id TEXT,
+  stripe_payment_id TEXT,
+  stripe_mode       TEXT,                     -- 'test' | 'live'
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  paid_at           TEXT,
+  se_synced_at      TEXT,                     -- marked once entered into SportsEngine
+  admin_notes       TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS orders_session ON orders(stripe_session_id) WHERE stripe_session_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS order_players (
+  id            TEXT PRIMARY KEY,
+  order_id      TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  first_name    TEXT NOT NULL,
+  last_name     TEXT NOT NULL,
+  birthdate     TEXT NOT NULL,
+  gender        TEXT NOT NULL DEFAULT '',
+  offering_id   TEXT NOT NULL REFERENCES offerings(id),
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','registered','waitlisted','offered','cancelled')),
+  answers       TEXT NOT NULL DEFAULT '{}',
+  kid_id        TEXT REFERENCES kids(id) ON DELETE SET NULL,
+  enrollment_id TEXT REFERENCES enrollments(id) ON DELETE SET NULL,
+  offer_session_id TEXT                       -- Stripe session for a waitlist spot being offered
+);
+
+CREATE TABLE IF NOT EXISTS order_lines (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id        TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  order_player_id TEXT NOT NULL REFERENCES order_players(id) ON DELETE CASCADE,
+  item_id         TEXT REFERENCES items(id) ON DELETE SET NULL,
+  name            TEXT NOT NULL,
+  tag             TEXT NOT NULL DEFAULT '',
+  unit_cents      INTEGER NOT NULL,
+  qty             INTEGER NOT NULL,
+  charged         INTEGER NOT NULL DEFAULT 1   -- 0 = waitlisted kid, not charged yet
+);
 `)

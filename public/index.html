@@ -21,7 +21,8 @@
         <button role="tab" data-tab="seats" aria-selected="true">Seats</button>
         <button role="tab" data-tab="drafts" aria-selected="false">Drafts</button>
         <button role="tab" data-tab="kids" aria-selected="false" data-admin hidden>Kids</button>
-        <button role="tab" data-tab="regs" aria-selected="false" data-admin hidden>Registrations<span class="badge" id="regBadge" hidden></span></button>
+        <button role="tab" data-tab="campaigns" aria-selected="false" data-admin hidden>Signups</button>
+        <button role="tab" data-tab="regs" aria-selected="false" data-admin hidden>SE inbox<span class="badge" id="regBadge" hidden></span></button>
         <button role="tab" data-tab="divisions" aria-selected="false" data-admin hidden>Divisions &amp; Teams</button>
         <button role="tab" data-tab="seasons" aria-selected="false" data-admin hidden>Seasons</button>
         <button role="tab" data-tab="log" aria-selected="false" data-admin hidden>Activity</button>
@@ -72,6 +73,15 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- CAMPAIGNS (admin) -->
+  <section id="view-campaigns" hidden>
+    <div class="row" style="margin-bottom:12px">
+      <select id="campSel" style="width:auto" aria-label="Campaign"></select>
+      <button class="btn" id="newCamp">New registration campaign</button>
+    </div>
+    <div id="campEditor" class="grid2"></div>
   </section>
 
   <!-- REGISTRATIONS (admin) -->
@@ -151,5 +161,6 @@
 <dialog id="dlg"></dialog>
 <div class="toast" id="toast" hidden></div>
 <script src="/js/app.js"></script>
+<script src="/js/campaigns.js"></script>
 </body>
 </html>
