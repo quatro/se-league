@@ -350,12 +350,21 @@ CREATE TABLE IF NOT EXISTS outreach_messages (
 `)
 
 // Columns added after a table first shipped.
-function addColumn(table: string, column: string, ddl: string) {
+function addColumn(table: string, column: string, ddl: string): boolean {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
-  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+  if (cols.some((c) => c.name === column)) return false
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+  return true
 }
 // What the family said about last year's player: a kid id (yes, that's them),
 // 'new' (no, not them), or '' (no one matched).
 addColumn('order_players', 'prior_match', `TEXT NOT NULL DEFAULT ''`)
 // 1 = only asked of players new to the league; skipped once a family confirms last season's player.
 addColumn('questions', 'new_only', `INTEGER NOT NULL DEFAULT 0`)
+// Whether a program takes registrations: 'open' (waitlist once seats run out), 'waitlist' (an admin
+// says it's full whatever the count) or 'closed' (hidden). Replaces the old active/waitlist flags.
+if (addColumn('offerings', 'reg_mode', `TEXT NOT NULL DEFAULT 'open' CHECK (reg_mode IN ('open','waitlist','closed'))`))
+  db.exec(`UPDATE offerings SET reg_mode = 'closed' WHERE active = 0`)
+// A waitlist spot offered to a family: their personal pay link and the deadline to use it.
+addColumn('order_players', 'offer_token', 'TEXT')
+addColumn('order_players', 'offer_expires_at', 'TEXT')

@@ -17,6 +17,8 @@ export const config = {
   cookieDomain: env.COOKIE_DOMAIN || '',
   viewerPassword: env.VIEWER_PASSWORD || '',
   leagueName: env.LEAGUE_NAME || 'SE Baseball',
+  // For dates families read (a waitlist offer's pay-by deadline). The league is in Lexington, KY.
+  timeZone: env.LEAGUE_TIME_ZONE || 'America/New_York',
   // The league site's public URL, for links back from draft rooms on their own hostnames.
   leagueUrl: (env.LEAGUE_URL || '').replace(/\/$/, ''),
   // Hostnames that open straight into one draft room, e.g.

@@ -1,12 +1,14 @@
 import { db } from '../db.js'
 import { config } from '../config.js'
 import {
-  ageIn, audit, changed, createKid, divisions, enroll, fitsAge, isDraftOnly, mustSeason, refreshPools, season, seasonState, slugOk,
+  ageIn, audit, changed, HOLDS_SEAT, createKid, divisions, enroll, fitsAge, isDraftOnly, mustSeason, refreshPools, season, seasonState, slugOk,
   UserError, type Kid, type Season,
 } from './league.js'
 import { addContact } from './contacts.js'
+import { mailConfigured, sendBatch } from './mailer.js'
 import { createCheckout, getCheckout, stripeConfigured, stripeMode, type LineItem } from './stripe.js'
 import { leagueAge, nameKey, normDate, uid } from './text.js'
+import { randomBytes } from 'node:crypto'
 
 // Registration campaigns: our own signup page and Stripe checkout.
 //
@@ -15,16 +17,18 @@ import { leagueAge, nameKey, normDate, uid } from './text.js'
 // per kid and extra questions, all built in admin. A family fills in the form,
 // pays on Stripe's hosted page, and the moment Stripe confirms payment each
 // kid becomes Registered in their division (seat counts, draft pools and kid
-// history update with it). Kids whose program is full go on a free waitlist;
-// an admin can later offer them the spot with a payment link.
+// history update with it). Kids whose program is full (or that an admin has
+// switched to "waitlist only") go on a free waitlist, first come first served;
+// an admin later offers a spot with a personal pay link that has a deadline.
 
 export interface Campaign { id: string; slug: string; name: string; season_id: string | null; status: 'draft' | 'open' | 'closed'; opens_at: string | null; closes_at: string | null; intro: string; confirmation: string; created_at: string }
-export interface Offering { id: string; campaign_id: string; division_id: string | null; name: string; description: string; min_age: number | null; max_age: number | null; capacity: number | null; waitlist: number; sort: number; active: number }
+export interface Offering { id: string; campaign_id: string; division_id: string | null; name: string; description: string; min_age: number | null; max_age: number | null; capacity: number | null; waitlist: number; sort: number; active: number; reg_mode: RegMode }
+export type RegMode = 'open' | 'waitlist' | 'closed'
 export interface Item { id: string; campaign_id: string; name: string; description: string; price_cents: number; required: number; max_qty: number; offering_ids: string; tag: string; sort: number; active: number }
 export interface Question { id: string; campaign_id: string; scope: 'player' | 'family'; label: string; help: string; type: QType; options: string; required: number; offering_ids: string; sort: number; active: number; new_only: number }
 export type QType = 'text' | 'textarea' | 'number' | 'date' | 'yesno' | 'select' | 'multi' | 'agreement'
 export interface Order { id: string; campaign_id: string; status: 'pending' | 'paid' | 'waitlisted' | 'cancelled' | 'refunded'; guardian: string; answers: string; total_cents: number; stripe_session_id: string | null; stripe_payment_id: string | null; stripe_mode: string | null; created_at: string; paid_at: string | null; se_synced_at: string | null; admin_notes: string }
-export interface OrderPlayer { id: string; order_id: string; first_name: string; last_name: string; birthdate: string; gender: string; offering_id: string; status: 'pending' | 'registered' | 'waitlisted' | 'offered' | 'cancelled'; answers: string; kid_id: string | null; enrollment_id: string | null; offer_session_id: string | null; prior_match: string }
+export interface OrderPlayer { id: string; order_id: string; first_name: string; last_name: string; birthdate: string; gender: string; offering_id: string; status: 'pending' | 'registered' | 'waitlisted' | 'offered' | 'cancelled'; answers: string; kid_id: string | null; enrollment_id: string | null; offer_session_id: string | null; prior_match: string; offer_token: string | null; offer_expires_at: string | null }
 
 const J = <T>(s: string, d: T): T => { try { return JSON.parse(s) as T } catch { return d } }
 const appliesTo = (ids: string, offeringId: string) => { const l = J<string[]>(ids, []); return !l.length || l.includes(offeringId) }
@@ -47,19 +51,25 @@ function ageSeason(c: Campaign): Season {
   return { id: String(y), year: y, status: 'planning', age_cutoff: '04-30', warn_at: 4, rolled_from: null, notes: '' }
 }
 
-/** Seats left for a program: its division's (or Majors+Minors group's) open seats, or a standalone cap. */
+/**
+ * Seats a new signup can take: the division's (or Majors+Minors group's) open seats, or a
+ * standalone cap, less everyone already on the waitlist — a seat that opens up goes to the
+ * families waiting in line, not to whoever registers next. "Waitlist only" makes it full outright.
+ */
 export function availability(o: Offering): { open: number | null; full: boolean } {
+  const held = o.reg_mode === 'waitlist'
   if (o.division_id) {
     const d = db.prepare('SELECT * FROM divisions WHERE id = ?').get(o.division_id) as { season_id: string; group_key: string; closed: number } | undefined
-    if (!d) return { open: null, full: false }
+    if (!d) return { open: null, full: held }
     const st = seasonState(d.season_id, false)
     const seats = d.group_key ? st.groups.find((g) => g.key === d.group_key)?.seats : st.divisions.find((x) => x.id === o.division_id)?.seats
-    if (!seats || !seats.capacity) return { open: null, full: !!d.closed }
-    return { open: seats.open, full: seats.open <= 0 || !!d.closed }
+    if (!seats || !seats.capacity) return { open: null, full: held || !!d.closed }
+    const open = seats.open - seats.waitlist
+    return { open, full: held || open <= 0 || !!d.closed }
   }
-  if (o.capacity == null) return { open: null, full: false }
-  const n = (db.prepare(`SELECT COUNT(*) n FROM order_players WHERE offering_id = ? AND status = 'registered'`).get(o.id) as { n: number }).n
-  return { open: o.capacity - n, full: n >= o.capacity }
+  if (o.capacity == null) return { open: null, full: held }
+  const n = (db.prepare(`SELECT COUNT(*) n FROM order_players WHERE offering_id = ? AND status IN ('registered','waitlisted','offered')`).get(o.id) as { n: number }).n
+  return { open: o.capacity - n, full: held || n >= o.capacity }
 }
 
 // An admin may run test checkouts on a draft campaign while Stripe is in test mode, so the form can be tried end to end before families see it.
@@ -81,9 +91,9 @@ export function publicCampaign(slugStr: string, preview = false) {
   const s = ageSeason(c)
   return {
     campaign: { name: c.name, slug: c.slug, intro: c.intro, closedReason: isOpen(c, preview), preview: preview && c.status === 'draft', year: s.year, ageCutoff: s.age_cutoff },
-    offerings: offerings(c.id).filter((o) => o.active).map((o) => {
+    offerings: offerings(c.id).filter((o) => o.reg_mode !== 'closed').map((o) => {
       const a = availability(o)
-      return { id: o.id, name: o.name, description: o.description, min_age: o.min_age, max_age: o.max_age, full: a.full, waitlist: !!o.waitlist, left: a.open != null && a.open <= 10 ? Math.max(0, a.open) : null }
+      return { id: o.id, name: o.name, description: o.description, min_age: o.min_age, max_age: o.max_age, full: a.full, left: a.open != null && a.open <= 10 ? Math.max(0, a.open) : null }
     }),
     items: items(c.id).filter((i) => i.active).map((i) => ({ id: i.id, name: i.name, description: i.description, price_cents: i.price_cents, required: !!i.required, max_qty: i.max_qty, offering_ids: J<string[]>(i.offering_ids, []) })),
     questions: questions(c.id).filter((q) => q.active).map((q) => ({ id: q.id, scope: q.scope, label: q.label, help: q.help, type: q.type, options: J<string[]>(q.options, []), required: !!q.required, offering_ids: J<string[]>(q.offering_ids, []), new_only: !!q.new_only })),
@@ -114,7 +124,19 @@ export function returningMatches(c: Campaign, first: string, last: string, dob: 
   })
   return played.slice(0, 3).map((r) => ({
     id: r.id, name: r.name, year: prior.year, division: r.division, team: r.team, suggestOfferingId: suggestedOffering(c, r.id),
+    // The program where a seat is already held for them: full or not, they register and pay there.
+    seatOfferingId: offerings(c.id).find((o) => o.active && holdsSeatIn(c, r.id, o))?.id ?? null,
   }))
+}
+
+/** A returner expected back in this program's division (or Majors+Minors group) already holds a seat there: it's theirs to claim. */
+function holdsSeatIn(c: Campaign, kidId: string, o: Offering): boolean {
+  if (!c.season_id || !o.division_id) return false
+  const e = db.prepare(`SELECT e.status, e.division_id, d.group_key FROM enrollments e JOIN divisions d ON d.id = e.division_id WHERE e.season_id = ? AND e.kid_id = ?`)
+    .get(c.season_id, kidId) as { status: string; division_id: string; group_key: string } | undefined
+  if (!e || !(HOLDS_SEAT as readonly string[]).includes(e.status)) return false
+  const og = (db.prepare('SELECT group_key FROM divisions WHERE id = ?').get(o.division_id) as { group_key: string } | undefined)?.group_key
+  return e.division_id === o.division_id || (!!e.group_key && e.group_key === og)
 }
 
 /** The program a returner is already expected in this season (e.g. back on their Majors team). */
@@ -184,15 +206,18 @@ export function programsFromSeason(campaignId: string, actor: string): number {
   return n
 }
 
-export interface OfferingInput { name: string; description?: string; division_id?: string | null; min_age?: number | null; max_age?: number | null; capacity?: number | null; waitlist?: boolean; sort?: number; active?: boolean }
+export interface OfferingInput { name: string; description?: string; division_id?: string | null; min_age?: number | null; max_age?: number | null; capacity?: number | null; reg_mode?: RegMode; sort?: number }
 export function saveOffering(campaignId: string, id: string | null, p: OfferingInput, actor: string) {
   const c = mustCampaign(campaignId)
   if (!p.name.trim()) throw new UserError('Program needs a name')
   if (p.division_id && !divisions(c.season_id ?? '').some((d) => d.id === p.division_id)) throw new UserError('That division isn’t in this campaign’s season')
-  const vals = [p.name.trim(), p.description ?? '', p.division_id ?? null, p.min_age ?? null, p.max_age ?? null, p.capacity ?? null, p.waitlist === false ? 0 : 1, p.sort ?? 0, p.active === false ? 0 : 1]
-  if (id) db.prepare('UPDATE offerings SET name=?, description=?, division_id=?, min_age=?, max_age=?, capacity=?, waitlist=?, sort=?, active=? WHERE id=? AND campaign_id=?').run(...vals, id, c.id)
-  else db.prepare('INSERT INTO offerings (name, description, division_id, min_age, max_age, capacity, waitlist, sort, active, id, campaign_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...vals, uid(), c.id)
-  audit(actor, 'campaign_program_saved', c.season_id, null, { campaign: c.name, program: p.name })
+  const was = id ? (db.prepare('SELECT reg_mode, sort FROM offerings WHERE id = ?').get(id) as { reg_mode: RegMode; sort: number } | undefined) : undefined
+  const mode = p.reg_mode ?? was?.reg_mode ?? 'open'
+  // active mirrors reg_mode for the code that only asks "is it offered at all".
+  const vals = [p.name.trim(), p.description ?? '', p.division_id ?? null, p.min_age ?? null, p.max_age ?? null, p.capacity ?? null, mode, p.sort ?? was?.sort ?? 0, mode === 'closed' ? 0 : 1]
+  if (id) db.prepare('UPDATE offerings SET name=?, description=?, division_id=?, min_age=?, max_age=?, capacity=?, reg_mode=?, sort=?, active=? WHERE id=? AND campaign_id=?').run(...vals, id, c.id)
+  else db.prepare('INSERT INTO offerings (name, description, division_id, min_age, max_age, capacity, reg_mode, sort, active, id, campaign_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...vals, uid(), c.id)
+  audit(actor, 'campaign_program_saved', c.season_id, null, { campaign: c.name, program: p.name, registration: mode })
   changed()
 }
 export function deleteOffering(id: string, actor: string) {
@@ -312,11 +337,15 @@ export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote
         AND e.status = 'Registered'`).get(c.season_id, nameKey(name), dob)
       if (already) throw new UserError(`${name} is already registered for ${s.year}`)
     }
+    // An expected returner fills the seat already held for them, so a full program doesn't waitlist them.
+    // (No roster match to confirm — say a kid with no 2026 birthdate — falls back to an exact name + birthdate.)
+    const kidId = returning && returning !== 'new' ? returning
+      : (db.prepare('SELECT id FROM kids WHERE name_key = ? AND birthdate = ?').get(nameKey(name), dob) as { id: string } | undefined)?.id
+    const ownSeat = !!kidId && holdsSeatIn(c, kidId, o)
     const a = availability(o)
     const used = (taken.get(o.id) ?? 0) + 1
-    const waitlisted = a.full || (a.open != null && a.open - used < 0)
-    if (waitlisted && !o.waitlist) throw new UserError(`${o.name} is full`)
-    if (!waitlisted) taken.set(o.id, used)
+    const waitlisted = !ownSeat && (a.full || (a.open != null && a.open - used < 0))
+    if (!waitlisted && !ownSeat) taken.set(o.id, used)
     const lines: { item: Item; qty: number }[] = []
     for (const it of its.filter((i) => appliesTo(i.offering_ids, o.id))) {
       let qty = Math.floor(Number(p.items?.[it.id] ?? 0)) || 0
@@ -458,25 +487,94 @@ function fulfillOffer(orderPlayerId: string, paymentId: string | null) {
   changed()
 }
 
-/** Admin offers a waitlisted kid their spot: a Stripe link for that kid's items (sent to the family by the admin). */
-export async function offerSpot(orderPlayerId: string, baseUrl: string, actor: string): Promise<{ url: string | null; registered: boolean }> {
+export const OFFER_HOURS = [24, 48, 72, 168] as const
+const offerLink = (c: Campaign, token: string, baseUrl: string) => `${baseUrl}/register/${c.slug}/spot/${token}`
+const offerExpired = (p: OrderPlayer, now = new Date().toISOString()) => p.status === 'offered' && !!p.offer_expires_at && p.offer_expires_at < now
+const playerItems = (id: string) => db.prepare('SELECT * FROM order_lines WHERE order_player_id = ?').all(id) as { name: string; unit_cents: number; qty: number }[]
+const longDate = (iso: string) => new Date(iso).toLocaleString('en-US', { timeZone: config.timeZone, weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+
+function offerEmail(c: Campaign, p: OrderPlayer, g: CheckoutInput['guardian'], link: string, total: number, expires: string) {
+  const program = (db.prepare('SELECT name FROM offerings WHERE id = ?').get(p.offering_id) as { name: string }).name
+  const when = longDate(expires)
+  const text = `Hi ${g.firstName || 'there'},
+
+Good news — a spot opened up in ${program} for ${p.first_name}, and it's yours if you'd like it.
+
+To claim it, pay the $${(total / 100).toFixed(2)} registration by ${when}:
+${link}
+
+If we don't hear from you by then, we'll offer the spot to the next family on the waitlist. If ${p.first_name} won't be playing this season after all, just reply and let us know.
+
+${config.leagueName}`
+  const esc = (x: string) => x.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!))
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#14213D;max-width:560px">${text.split(/\n{2,}/).map((para) =>
+    `<p>${para.split('\n').map((line) => line === link ? `<a href="${esc(link)}" style="display:inline-block;margin-top:6px;background:#14213D;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold">Claim ${esc(p.first_name)}’s spot</a>` : esc(line)).join('<br>')}</p>`).join('')}</div>`
+  return { to: g.email, subject: `A spot opened up for ${p.first_name} — ${c.name}`, text, html }
+}
+
+/**
+ * Admin offers a waitlisted kid their spot: a personal pay link good until a deadline.
+ * Emailed to the family when email is set up; the admin can always copy it too.
+ * Offering again (after a deadline passes, or to extend it) makes a new link.
+ */
+export async function offerSpot(orderPlayerId: string, hours: number, baseUrl: string, actor: string): Promise<{ url: string | null; expiresAt: string | null; emailed: string | null; emailError: string; registered: boolean }> {
   const p = db.prepare('SELECT * FROM order_players WHERE id = ?').get(orderPlayerId) as OrderPlayer | undefined
   if (!p || !['waitlisted', 'offered'].includes(p.status)) throw new UserError('That player isn’t on the waitlist')
+  if (!(OFFER_HOURS as readonly number[]).includes(hours)) throw new UserError('Pick how long the family has to pay')
   const o = order(p.order_id)!, c = mustCampaign(o.campaign_id), g = J<CheckoutInput['guardian']>(o.guardian, {} as CheckoutInput['guardian'])
-  const lines = db.prepare('SELECT * FROM order_lines WHERE order_player_id = ?').all(p.id) as { name: string; unit_cents: number; qty: number }[]
-  const total = lines.reduce((a, l) => a + l.unit_cents * l.qty, 0)
-  audit(actor, 'waitlist_spot_offered', c.season_id, p.kid_id, { campaign: c.name, player: `${p.first_name} ${p.last_name}` })
-  if (!total) { fulfillOffer(p.id, null); return { url: null, registered: true } }
+  const total = playerItems(p.id).reduce((a, l) => a + l.unit_cents * l.qty, 0)
+  audit(actor, 'waitlist_spot_offered', c.season_id, p.kid_id, { campaign: c.name, player: `${p.first_name} ${p.last_name}`, hours })
+  if (!total) { fulfillOffer(p.id, null); return { url: null, expiresAt: null, emailed: null, emailError: '', registered: true } }
   if (!stripeConfigured()) throw new UserError('Stripe is not configured')
+  const token = randomBytes(18).toString('base64url')
+  const expiresAt = new Date(Date.now() + hours * 3600e3).toISOString()
+  db.prepare(`UPDATE order_players SET status = 'offered', offer_token = ?, offer_expires_at = ?, offer_session_id = NULL WHERE id = ?`).run(token, expiresAt, p.id)
+  changed()
+  const url = offerLink(c, token, baseUrl)
+  let emailed: string | null = null, emailError = ''
+  if (mailConfigured() && g.email) {
+    const [r] = await sendBatch([offerEmail(c, p, g, url, total, expiresAt)])
+    if (r?.ok) emailed = g.email
+    else emailError = r?.error ?? 'Email failed'
+  }
+  return { url, expiresAt, emailed, emailError, registered: false }
+}
+
+/** The family opened their pay link: start a fresh Stripe checkout for that kid, or say why not. */
+export async function payOffer(slugStr: string, token: string, baseUrl: string): Promise<string> {
+  const c = campaignBySlug(slugStr)
+  const p = c && token ? (db.prepare('SELECT * FROM order_players WHERE offer_token = ?').get(token) as OrderPlayer | undefined) : undefined
+  const o = p ? order(p.order_id) : undefined
+  if (!c || !p || !o || o.campaign_id !== c.id) throw new UserError('This link isn’t valid. Please check the email we sent, or contact the league.')
+  const done = `${baseUrl}/register/${c.slug}/done?order=${o.id}`
+  if (p.status === 'registered') return done
+  if (p.status !== 'offered') throw new UserError(`This offer for ${p.first_name} is no longer available. Please contact the league if you have questions.`)
+  if (offerExpired(p)) throw new UserError(`This offer for ${p.first_name} expired on ${longDate(p.offer_expires_at!)}. Please contact the league — ${p.first_name} may still be on the waitlist.`)
+  const g = J<CheckoutInput['guardian']>(o.guardian, {} as CheckoutInput['guardian'])
   const session = await createCheckout({
-    lines: lines.map((l) => ({ name: `${l.name} — ${p.first_name} ${p.last_name}`, unitCents: l.unit_cents, qty: l.qty })),
+    lines: playerItems(p.id).map((l) => ({ name: `${l.name} — ${p.first_name} ${p.last_name}`, unitCents: l.unit_cents, qty: l.qty })),
     email: g.email, orderId: o.id, idempotencyKey: `offer-${p.id}-${Date.now()}`, extraMetadata: { order_player_id: p.id },
-    successUrl: `${baseUrl}/register/${c.slug}/done?order=${o.id}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: `${baseUrl}/register/${c.slug}`,
+    successUrl: `${done}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: done, // the done page shows the offer still open, with its pay link
     description: `${c.name} registration — ${p.first_name} ${p.last_name} (waitlist spot)`,
   })
-  db.prepare(`UPDATE order_players SET status = 'offered', offer_session_id = ? WHERE id = ?`).run(session.id, p.id)
+  db.prepare('UPDATE order_players SET offer_session_id = ? WHERE id = ?').run(session.id, p.id)
+  return session.url
+}
+
+/** Take a kid off the waitlist (the family declined, or let the offer lapse). Frees their place in line. */
+export function removeFromWaitlist(orderPlayerId: string, actor: string) {
+  const res = db.transaction(() => {
+    const p = db.prepare('SELECT * FROM order_players WHERE id = ?').get(orderPlayerId) as OrderPlayer | undefined
+    if (!p || !['waitlisted', 'offered'].includes(p.status)) throw new UserError('That player isn’t on the waitlist')
+    const o = order(p.order_id)!, c = mustCampaign(o.campaign_id)
+    db.prepare(`UPDATE order_players SET status = 'cancelled', offer_token = NULL, offer_expires_at = NULL WHERE id = ?`).run(p.id)
+    if (p.enrollment_id) db.prepare(`UPDATE enrollments SET status = 'Withdrawn', updated_at = datetime('now') WHERE id = ? AND status = 'Waitlist'`).run(p.enrollment_id)
+    if (o.status === 'waitlisted' && players(o.id).every((x) => x.status === 'cancelled')) db.prepare(`UPDATE orders SET status = 'cancelled' WHERE id = ?`).run(o.id)
+    audit(actor, 'removed_from_waitlist', c.season_id, p.kid_id, { campaign: c.name, player: `${p.first_name} ${p.last_name}` })
+    return c.season_id
+  })()
+  if (res) refreshPools(res)
   changed()
-  return { url: session.url, registered: false }
 }
 
 /** Stripe webhook events. Returns a short note for the log. */
@@ -492,7 +590,8 @@ export function handleStripeEvent(ev: { type: string; data: { object: Record<str
     return `fulfilled ${o.id}: ${fulfill(o.id, pi).did} players`
   }
   if (ev.type === 'checkout.session.expired') {
-    if (meta.order_player_id) { db.prepare(`UPDATE order_players SET status = 'waitlisted', offer_session_id = NULL WHERE id = ? AND status = 'offered'`).run(meta.order_player_id); changed(); return 'offer expired' }
+    // A pay-link checkout left unfinished; the offer itself stands until its deadline.
+    if (meta.order_player_id) { db.prepare('UPDATE order_players SET offer_session_id = NULL WHERE id = ? AND offer_session_id = ?').run(meta.order_player_id, obj.id); return 'offer checkout expired' }
     const n = db.prepare(`UPDATE orders SET status = 'cancelled' WHERE stripe_session_id = ? AND status = 'pending'`).run(obj.id).changes
     if (n) { db.prepare(`UPDATE order_players SET status = 'cancelled' WHERE order_id = (SELECT id FROM orders WHERE stripe_session_id = ?) AND status = 'pending'`).run(obj.id); changed() }
     return n ? 'abandoned checkout cancelled' : 'nothing to cancel'
@@ -528,7 +627,10 @@ export async function confirmFromReturn(orderId: string, sessionId: string | nul
   const fresh = order(orderId)!, c = mustCampaign(fresh.campaign_id)
   return {
     status: fresh.status, campaign: c.name, confirmation: c.confirmation, total_cents: fresh.total_cents,
-    players: players(orderId).map((p) => ({ name: `${p.first_name} ${p.last_name}`, status: p.status, program: (db.prepare('SELECT name FROM offerings WHERE id = ?').get(p.offering_id) as { name: string }).name })),
+    players: players(orderId).map((p) => ({
+      name: `${p.first_name} ${p.last_name}`, status: offerExpired(p) ? 'expired' : p.status, program: (db.prepare('SELECT name FROM offerings WHERE id = ?').get(p.offering_id) as { name: string }).name,
+      ...(p.status === 'offered' && p.offer_token && !offerExpired(p) ? { pay_url: offerLink(c, p.offer_token, config.baseUrl), pay_by: longDate(p.offer_expires_at!) } : {}),
+    })),
   }
 }
 
@@ -539,8 +641,24 @@ export function adminCampaign(id: string) {
   const ps = db.prepare('SELECT op.* FROM order_players op JOIN orders o ON o.id = op.order_id WHERE o.campaign_id = ?').all(id) as OrderPlayer[]
   const lines = db.prepare('SELECT ol.* FROM order_lines ol JOIN orders o ON o.id = ol.order_id WHERE o.campaign_id = ?').all(id) as { order_player_id: string; name: string; qty: number; unit_cents: number; charged: number; tag: string }[]
   const offs = offerings(id)
+  // Each program's waitlist, first come first served.
+  const signedUp = new Map(os.map((o) => [o.id, o.created_at]))
+  const now = new Date().toISOString()
+  const waitlist = offs.map((o) => ({
+    offering_id: o.id, program: o.name,
+    players: ps.filter((p) => p.offering_id === o.id && ['waitlisted', 'offered'].includes(p.status))
+      .sort((a, b) => (signedUp.get(a.order_id)! < signedUp.get(b.order_id)! ? -1 : signedUp.get(a.order_id)! > signedUp.get(b.order_id)! ? 1 : 0))
+      .map((p, i) => {
+        const g = J<CheckoutInput['guardian']>(os.find((x) => x.id === p.order_id)!.guardian, {} as CheckoutInput['guardian'])
+        return { id: p.id, pos: i + 1, name: `${p.first_name} ${p.last_name}`, kid_id: p.kid_id, family: `${g.firstName} ${g.lastName}`, email: g.email, phone: g.phone,
+          signed_up: signedUp.get(p.order_id), status: offerExpired(p, now) ? 'expired' : p.status, offer_expires_at: p.offer_expires_at,
+          offer_url: p.status === 'offered' && p.offer_token ? offerLink(c, p.offer_token, config.baseUrl) : null,
+          due_cents: lines.filter((l) => l.order_player_id === p.id).reduce((a, l) => a + l.unit_cents * l.qty, 0) }
+      }),
+  })).filter((w) => w.players.length)
+  const pos = new Map(waitlist.flatMap((w) => w.players.map((p) => [p.id, p.pos] as const)))
   return {
-    campaign: c, url: `${config.baseUrl}/register/${c.slug}`, stripe: stripeConfigured() ? stripeMode() : null, webhook: !!config.stripe.webhookSecret,
+    campaign: c, waitlist, mail: mailConfigured(), offerHours: OFFER_HOURS, url: `${config.baseUrl}/register/${c.slug}`, stripe: stripeConfigured() ? stripeMode() : null, webhook: !!config.stripe.webhookSecret,
     offerings: offs.map((o) => ({ ...o, ...availability(o), registered: ps.filter((p) => p.offering_id === o.id && p.status === 'registered').length, waitlisted: ps.filter((p) => p.offering_id === o.id && ['waitlisted', 'offered'].includes(p.status)).length })),
     items: items(id).map((i) => ({ ...i, offering_ids: J<string[]>(i.offering_ids, []), sold: lines.filter((l) => l.name === i.name && l.charged).reduce((a, l) => a + l.qty, 0) })),
     questions: questions(id).map((q) => ({ ...q, options: J<string[]>(q.options, []), offering_ids: J<string[]>(q.offering_ids, []) })),
@@ -552,7 +670,7 @@ export function adminCampaign(id: string) {
     },
     orders: os.map((o) => ({
       ...o, guardian: J(o.guardian, {}), answers: J(o.answers, {}),
-      players: ps.filter((p) => p.order_id === o.id).map((p) => ({ ...p, answers: J(p.answers, {}), program: offs.find((x) => x.id === p.offering_id)?.name, lines: lines.filter((l) => l.order_player_id === p.id) })),
+      players: ps.filter((p) => p.order_id === o.id).map((p) => ({ ...p, offer_token: undefined, wait_pos: pos.get(p.id) ?? null, answers: J(p.answers, {}), program: offs.find((x) => x.id === p.offering_id)?.name, lines: lines.filter((l) => l.order_player_id === p.id) })),
     })),
   }
 }

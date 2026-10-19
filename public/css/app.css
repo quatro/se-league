@@ -118,6 +118,7 @@ dialog form,dialog .dlg{padding:16px;display:grid;gap:10px}
 .gate h1{font-size:1.7rem}
 .err-text{color:var(--stitch);font-weight:600;min-height:1.2em;margin:0}
 .warnbox{border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--card));padding:8px 12px;border-radius:4px}
+.waitnote{margin-top:8px;font-size:.92rem}
 
 /* ---- league pages ---- */
 .dot.Expected{background:var(--blue);border-color:var(--blue)}

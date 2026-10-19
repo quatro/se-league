@@ -135,12 +135,78 @@ test('full program: free waitlist, no charge, not draftable; an offered spot reg
   assert.equal(enr('Dee Kid').status, 'Waitlist')
   assert.equal(L.seasonState('2027', false).divisions.find((d) => d.key === 'tball')!.seats.waitlist, 1)
   const pid = (db.prepare(`SELECT id FROM order_players WHERE first_name = 'Dee'`).get() as { id: string }).id
-  const offer = await C.offerSpot(pid, base, A)
-  assert.match(offer.url!, /checkout\.stripe\.com/)
+  await assert.rejects(C.offerSpot(pid, 5, base, A), /how long/)
+  const offer = await C.offerSpot(pid, 48, base, A)
+  // Our own pay link with a deadline; Stripe is only asked when the family opens it.
+  assert.match(offer.url!, /^https:\/\/league\.test\/register\/2027-spring\/spot\//)
+  assert.equal(offer.emailed, null, 'email is not set up in tests')
+  const hrs = (Date.parse(offer.expiresAt!) - Date.now()) / 3600e3
+  assert.ok(hrs > 47.9 && hrs <= 48)
+  const token = offer.url!.split('/').at(-1)!
+  const n = sessions.length
+  assert.match(await C.payOffer('2027-spring', token, base), /checkout\.stripe\.com/)
+  assert.equal(sessions.length, n + 1)
   assert.match(sessions.at(-1)!.body, /metadata\[order_player_id\]=/)
+  // A Stripe checkout left unfinished doesn't end the offer; the deadline does.
+  C.handleStripeEvent({ type: 'checkout.session.expired', data: { object: { id: `cs_test_${n + 1}`, metadata: { order_id: r.orderId, order_player_id: pid } } } })
+  assert.equal((db.prepare('SELECT status FROM order_players WHERE id = ?').get(pid) as { status: string }).status, 'offered')
+  await assert.rejects(C.payOffer('2027-spring', 'nope', base), /isn’t valid/)
   paid(r.orderId, { order_player_id: pid })
   assert.equal(enr('Dee Kid').status, 'Registered')
   assert.equal(C.order(r.orderId)!.total_cents, 20500)
+  // Paid already: the link just shows the confirmation.
+  assert.match(await C.payOffer('2027-spring', token, base), /\/done\?order=/)
+})
+
+test('waitlist only, first come first served, expired offers, removing a family', async () => {
+  const tball = () => C.offerings(cid).find((o) => o.name === 'T-Ball')!
+  const save = (mode: 'open' | 'waitlist' | 'closed') => { const o = tball(); C.saveOffering(cid, o.id, { name: o.name, division_id: o.division_id, min_age: o.min_age, max_age: o.max_age, reg_mode: mode }, A) }
+  const sort = tball().sort
+  // Ben, Cal and Dee hold three seats; a fourth opens. Gus is waiting, so it's Gus's, not the next signup's.
+  L.saveDivision('2027', L.divisionByKey('2027', 'tball')!.id, { key: 'tball', name: 'T-Ball', teams: 1, roster_size: 4, min_age: 5, max_age: 6 }, A)
+  assert.equal(C.availability(tball()).open, 1)
+  save('waitlist')
+  assert.equal(tball().sort, sort, 'saving a row keeps its order')
+  assert.equal(tball().active, 1)
+  const pubT = () => pub().offerings.find((o) => o.name === 'T-Ball')!
+  assert.equal(pubT().full, true, 'waitlist only, though a seat is open')
+  const g = await C.startCheckout('2027-spring', family([kid('Gus', '2021-03-01', 'T-Ball')]), base)
+  assert.equal(C.order(g.orderId)!.status, 'waitlisted')
+  save('open')
+  assert.equal(C.availability(tball()).open, 0)
+  assert.equal(pubT().full, true, 'the open seat is Gus’s: he is first in line')
+  const h = await C.startCheckout('2027-spring', family([kid('Hal', '2021-04-01', 'T-Ball')]), base)
+  assert.equal(C.order(h.orderId)!.status, 'waitlisted')
+  const w = C.adminCampaign(cid).waitlist.find((x) => x.program === 'T-Ball')!
+  assert.deepEqual(w.players.map((p) => [p.pos, p.name]), [[1, 'Gus Kid'], [2, 'Hal Kid']])
+  // Gus's offer lapses.
+  const gus = w.players[0]!.id
+  const offer = await C.offerSpot(gus, 24, base, A)
+  db.prepare(`UPDATE order_players SET offer_expires_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(gus)
+  assert.equal(C.adminCampaign(cid).waitlist.find((x) => x.program === 'T-Ball')!.players[0]!.status, 'expired')
+  await assert.rejects(C.payOffer('2027-spring', offer.url!.split('/').at(-1)!, base), /expired/)
+  // Removing him frees his place: Hal moves to #1 and his enrollment is withdrawn.
+  C.removeFromWaitlist(gus, A)
+  assert.equal(enr('Gus Kid').status, 'Withdrawn')
+  assert.equal(C.order(g.orderId)!.status, 'cancelled')
+  assert.deepEqual(C.adminCampaign(cid).waitlist.find((x) => x.program === 'T-Ball')!.players.map((p) => [p.pos, p.name]), [[1, 'Hal Kid']])
+  assert.equal(pubT().full, true, 'still Hal’s seat')
+  C.removeFromWaitlist(C.adminCampaign(cid).waitlist[0]!.players[0]!.id, A)
+  assert.equal(pubT().full, false, 'nobody waiting: the open seat is for anyone')
+  save('closed')
+  assert.equal(pub().offerings.some((o) => o.name === 'T-Ball'), false)
+  await assert.rejects(C.startCheckout('2027-spring', family([{ ...kid('Ivy', '2021-05-01', 'Major/Minor'), offeringId: tball().id }]), base), /pick a program/)
+  save('open')
+  L.saveDivision('2027', L.divisionByKey('2027', 'tball')!.id, { key: 'tball', name: 'T-Ball', teams: 1, roster_size: 2, min_age: 5, max_age: 6 }, A)
+  // Full (over, even) — but a returner expected back in T-Ball already holds a seat, so they pay and register.
+  const rae = L.createKid('Rae Kid', '2021-06-01')
+  L.enroll('2027', rae.id, { divisionId: L.divisionByKey('2027', 'tball')!.id, returner: true }, A)
+  assert.equal(pubT().full, true)
+  const r = await C.startCheckout('2027-spring', family([kid('Rae', '2021-06-01', 'T-Ball'), kid('Sid', '2021-07-01', 'T-Ball')]), base)
+  assert.equal(C.order(r.orderId)!.total_cents, 20500, 'Rae pays; Sid, new, is waitlisted')
+  paid(r.orderId)
+  assert.equal(enr('Rae Kid').status, 'Registered')
+  assert.equal(enr('Sid Kid').status, 'Waitlist')
 })
 
 test('abandoned checkout is cancelled when Stripe expires the session', async () => {

@@ -29,6 +29,9 @@ function leagueAge(dob) {
 }
 const fits = (o, age) => age != null && (o.min_age == null || age >= o.min_age) && (o.max_age == null || age <= o.max_age);
 const applies = (x, offeringId) => !x.offering_ids.length || x.offering_ids.includes(offeringId);
+/* Full for this player? A returner the family confirmed already holds a seat in their program. */
+function fullFor(o, returnerMatch) { return o.full && !(returnerMatch && returnerMatch.seatOfferingId === o.id); }
+const matchOf = (sec) => sec._matches?.find((m) => m.id === sec._returning);
 
 /* ---------- questions ---------- */
 function questionHtml(q, name, val) {
@@ -121,20 +124,24 @@ function renderPlayer(sec) {
   sec.querySelector('.agehint').textContent = age != null ? `League age ${age} for ${C.campaign.year}` : '';
   const first = sec.querySelector('[name=first]').value.trim();
   sec.querySelector('.ptitle').textContent = first || 'Player';
-  const ok = C.offerings.filter((o) => fits(o, age) && (!o.full || o.waitlist));
+  const ok = C.offerings.filter((o) => fits(o, age));
   const cur = sec.querySelector('[name=program]:checked')?.value || d.offeringId;
   const prog = sec.querySelector('.programs');
   prog.innerHTML = age == null ? '<p class="note">Enter a birthdate to see the programs this player can join.</p>'
     : ok.length ? `<b style="font-size:.88rem">Program</b>${ok.map((o) => `<label><input type="radio" name="program-${sec.dataset.pid}" data-program value="${esc(o.id)}" ${o.id === cur || ok.length === 1 ? 'checked' : ''}>
-        <span><b>${esc(o.name)} ${o.full ? '<span class="pill wait">Full — free waitlist</span>' : o.left != null && o.left <= 5 ? `<span class="pill wait">${o.left} left</span>` : ''}</b>${o.description ? `<span class="sub">${esc(o.description)}</span>` : ''}</span></label>`).join('')}`
+        <span><b>${esc(o.name)} ${fullFor(o, matchOf(sec)) ? '<span class="pill wait">Full — waitlist</span>' : o.left != null && o.left <= 5 ? `<span class="pill wait">${o.left} left</span>` : ''}</b>${o.description ? `<span class="sub">${esc(o.description)}</span>` : ''}</span></label>`).join('')}`
       : `<p class="err-text">No ${C.campaign.year} program fits league age ${age}.</p>`;
   const offeringId = sec.querySelector('[data-program]:checked')?.value;
   const offering = C.offerings.find((o) => o.id === offeringId);
+  // Say it plainly the moment we know: full, but they can still sign up and pay nothing today.
+  const waits = offering && fullFor(offering, matchOf(sec));
+  if (waits) prog.insertAdjacentHTML('beforeend', `<div class="warnbox waitnote" role="status"><b>${esc(offering.name)} is full for ${C.campaign.year} — but you can still sign up.</b>
+    ${esc(first || 'This player')} will join the waitlist in the order families register. Nothing is charged today. If a spot opens, we’ll email you a link to pay and claim it.</div>`);
   // Items
   const its = offering ? C.items.filter((i) => applies(i, offering.id)) : [];
   const qty = (i) => { const el = sec.querySelector(`[data-item="${i.id}"]`); return el ? (el.type === 'checkbox' ? (el.checked ? 1 : 0) : +el.value) : (d.items?.[i.id] ?? 0); };
   const prevQ = Object.fromEntries(its.map((i) => [i.id, qty(i)]));
-  sec.querySelector('.items').innerHTML = its.length ? `<b style="font-size:.88rem">Fees &amp; add-ons${offering.full ? ' <span class="sub">(charged only if a spot opens up)</span>' : ''}</b>` + its.map((i) => `<div class="itemrow"><div><b>${esc(i.name)}</b>${i.required ? ' <span class="sub">required</span>' : ''}${i.description ? `<div class="sub">${esc(i.description)}</div>` : ''}</div>
+  sec.querySelector('.items').innerHTML = its.length ? `<b style="font-size:.88rem">Fees &amp; add-ons${waits ? ' <span class="sub">(charged only if a spot opens up)</span>' : ''}</b>` + its.map((i) => `<div class="itemrow"><div><b>${esc(i.name)}</b>${i.required ? ' <span class="sub">required</span>' : ''}${i.description ? `<div class="sub">${esc(i.description)}</div>` : ''}</div>
       <div class="row" style="flex-wrap:nowrap">${i.required ? '<span class="sub">×1</span>' : i.max_qty > 1
         ? `<select data-item="${esc(i.id)}" aria-label="${esc(i.name)} quantity">${Array.from({ length: i.max_qty + 1 }, (_, n) => `<option ${prevQ[i.id] === n ? 'selected' : ''}>${n}</option>`).join('')}</select>`
         : `<input type="checkbox" data-item="${esc(i.id)}" aria-label="Add ${esc(i.name)}" ${prevQ[i.id] ? 'checked' : ''}>`}<span class="price">${money(i.price_cents)}${i.max_qty > 1 ? ' each' : ''}</span></div></div>`).join('') : '';
@@ -168,32 +175,41 @@ function renderSummary() {
   const data = readForm();
   let total = 0, waiting = 0;
   const rows = [];
-  for (const p of data.players) {
+  const secs = [...document.querySelectorAll('.player')];
+  data.players.forEach((p, n) => {
     const o = C.offerings.find((x) => x.id === p.offeringId);
-    if (!o) continue;
+    if (!o) return;
     const name = `${p.firstName || 'Player'} ${p.lastName}`.trim();
-    if (o.full) { waiting++; rows.push(`<tr><td>${esc(name)} — ${esc(o.name)} <span class="pill wait">waitlist</span></td><td>$0</td></tr>`); continue; }
+    if (fullFor(o, matchOf(secs[n]))) { waiting++; rows.push(`<tr><td>${esc(name)} — ${esc(o.name)} <span class="pill wait">waitlist</span></td><td>$0</td></tr>`); return; }
     for (const i of C.items.filter((i) => applies(i, o.id))) {
       const q = i.required ? 1 : p.items[i.id] || 0;
       if (!q) continue;
       total += q * i.price_cents;
       rows.push(`<tr><td>${esc(name)} — ${esc(i.name)}${q > 1 ? ` ×${q}` : ''}</td><td>${money(q * i.price_cents)}</td></tr>`);
     }
-  }
-  $('summary').innerHTML = rows.length ? `<table class="sumtable">${rows.join('')}<tr class="total"><td>Total today</td><td>${money(total)}</td></tr></table>` : '<p class="note">Add a player and pick a program.</p>';
+  });
+  $('summary').innerHTML = rows.length ? `<table class="sumtable">${rows.join('')}<tr class="total"><td>Total today</td><td>${money(total)}</td></tr></table>
+    ${waiting ? `<p class="note">Waitlisted players aren’t charged. If a spot opens, we’ll email you a link to pay for it.</p>` : ''}` : '<p class="note">Add a player and pick a program.</p>';
   $('submit').textContent = total > 0 ? `Continue to payment — ${money(total)}` : waiting ? 'Join the waitlist' : 'Register';
   $('payNote').hidden = !(total > 0);
   try { localStorage.setItem(DRAFT, JSON.stringify(data)); } catch { /* private mode */ }
 }
 
 /* ---------- boot ---------- */
+const PSTATUS = {
+  registered: 'registered',
+  waitlisted: 'on the waitlist — nothing charged. We’ll email you if a spot opens.',
+  offered: 'a spot is open for this player!',
+  expired: 'the offer to claim a spot has expired. Please contact the league.',
+  cancelled: 'not registered',
+};
 async function showDone() {
   const qs = new URLSearchParams(location.search);
   $('form').hidden = true; $('done').hidden = false;
   const show = (r) => {
     const ok = r.status === 'paid' || r.status === 'waitlisted';
     $('done').innerHTML = `<section class="regsec"><h2>${r.status === 'paid' ? 'You’re registered!' : r.status === 'waitlisted' ? 'You’re on the waitlist' : r.status === 'pending' ? 'Confirming your payment…' : 'This registration wasn’t completed'}</h2>
-      <ul>${r.players.map((p) => `<li><b>${esc(p.name)}</b> — ${esc(p.program)}: ${p.status === 'registered' ? 'registered' : p.status === 'waitlisted' || p.status === 'offered' ? 'waitlist (no charge — we’ll contact you if a spot opens)' : esc(p.status)}</li>`).join('')}</ul>
+      <ul>${r.players.map((p) => `<li><b>${esc(p.name)}</b> — ${esc(p.program)}: ${PSTATUS[p.status] ?? esc(p.status)}${p.pay_url ? ` <a class="btn primary" href="${esc(p.pay_url)}">Pay to claim the spot</a> <span class="sub">by ${esc(p.pay_by)}</span>` : ''}</li>`).join('')}</ul>
       ${r.status === 'paid' ? `<p>Paid ${money(r.total_cents)}. Stripe emails your receipt.</p>` : ''}
       ${ok && r.confirmation ? `<div class="intro">${esc(r.confirmation)}</div>` : ''}
       ${r.status === 'cancelled' ? `<p><a class="btn primary" href="/register/${esc(slug)}">Start again</a></p>` : ''}</section>`;

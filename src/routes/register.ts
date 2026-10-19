@@ -88,6 +88,18 @@ register.post('/api/register/:slug/checkout', wrap(async (req, res) => {
   noteFailure(key) // counts checkouts started: 8 per 15 minutes per address is plenty for a family
   return out
 }))
+// A waitlist family's pay link: straight on to Stripe, or a plain page saying why not.
+register.get('/register/:slug/spot/:token', async (req, res, next) => {
+  try {
+    res.redirect(303, await C.payOffer(p(req, 'slug'), p(req, 'token').slice(0, 64), config.baseUrl))
+  } catch (e) {
+    if (!(e instanceof UserError)) return next(e)
+    const esc = (x: string) => x.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!))
+    res.status(410).type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Waitlist spot</title>
+<link rel="stylesheet" href="/css/app.css"></head><body><main class="reg"><header class="top"><h1><small>${esc(config.leagueName)}</small><span>Waitlist spot</span></h1></header>
+<section class="regsec"><p>${esc(e.message)}</p></section></main></body></html>`)
+  }
+})
 register.get('/api/register/order/:id', wrap((req) => C.confirmFromReturn(p(req, 'id'), req.query.session_id ? String(req.query.session_id) : null)))
 
 // ---------- admin ----------
@@ -114,7 +126,7 @@ admin.post('/:id/programs-from-season', wrap((req) => { const n = C.programsFrom
 const ids = z.array(z.string().max(40)).max(50).optional()
 const offeringBody = z.object({ name: z.string().min(1).max(80), description: z.string().max(2000).optional(), division_id: z.union([z.string(), z.null()]).optional(),
   min_age: z.union([z.number().int().min(0).max(99), z.null()]).optional(), max_age: z.union([z.number().int().min(0).max(99), z.null()]).optional(),
-  capacity: z.union([z.number().int().min(0).max(10000), z.null()]).optional(), waitlist: z.boolean().optional(), sort: z.number().int().optional(), active: z.boolean().optional() })
+  capacity: z.union([z.number().int().min(0).max(10000), z.null()]).optional(), reg_mode: z.enum(['open', 'waitlist', 'closed']).optional(), sort: z.number().int().optional() })
 admin.post('/:id/programs', wrap((req) => { C.saveOffering(p(req, 'id'), null, offeringBody.parse(req.body), actor(req)) }))
 admin.patch('/:id/programs/:oid', wrap((req) => { C.saveOffering(p(req, 'id'), p(req, 'oid'), offeringBody.parse(req.body), actor(req)) }))
 admin.delete('/:id/programs/:oid', wrap((req) => { C.deleteOffering(p(req, 'oid'), actor(req)) }))
@@ -139,9 +151,11 @@ admin.post('/:id/orders/synced', wrap((req) => {
 }))
 admin.patch('/:id/orders/:oid', wrap((req) => { C.setOrderNotes(p(req, 'oid'), z.object({ admin_notes: z.string().max(4000) }).parse(req.body).admin_notes) }))
 admin.post('/:id/players/:pid/offer', wrap(async (req) => {
-  const r = await C.offerSpot(p(req, 'pid'), config.baseUrl, actor(req))
-  return { ...r, message: r.registered ? 'Nothing to pay — registered' : 'Payment link created — send it to the family' }
+  const { hours } = z.object({ hours: z.number().int() }).parse(req.body)
+  const r = await C.offerSpot(p(req, 'pid'), hours, config.baseUrl, actor(req))
+  return { ...r, message: r.registered ? 'Nothing to pay — registered' : r.emailed ? `Offer emailed to ${r.emailed}` : 'Pay link created — send it to the family' }
 }))
+admin.post('/:id/players/:pid/remove', wrap((req) => { C.removeFromWaitlist(p(req, 'pid'), actor(req)); return { message: 'Removed from the waitlist' } }))
 admin.get('/:id/export.csv', wrap((req, res) => {
   const c = C.mustCampaign(p(req, 'id'))
   const rows = C.exportRows(c.id, req.query.unsynced === '1')
