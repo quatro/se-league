@@ -62,12 +62,8 @@ function render() {
 }
 
 function renderWho() {
-  const adminUrl = location.pathname.replace(/\/admin$/, '').replace(/\/$/, '') + '/admin';
-  $('whoami').innerHTML = S.me?.admin
-    ? `Signed in as <b>${esc(S.me.admin)}</b> · <button id="logout">Log out</button>`
-    : `<a href="${esc(adminUrl === '/admin' ? '/admin' : adminUrl)}">Admin login</a>`;
-  const lo = $('logout');
-  if (lo) lo.onclick = async () => { await act('POST', '/api/logout', {}); location.reload(); };
+  $('whoami').innerHTML = `Signed in as <b>${esc(S.me.user.email)}</b>${S.me.admin ? ' (admin)' : ''} · <button id="logout">Log out</button>`;
+  $('logout').onclick = async () => { await act('POST', '/api/logout', {}); location.href = '/signin'; };
   const base = S.home?.leagueUrl || '';
   $('tools').innerHTML = `<span class="chip ${S.live ? 'live' : 'off'}">${S.live ? 'Live' : 'Reconnecting'}</span> <a href="${esc(base)}/">League home</a>`;
 }
@@ -131,7 +127,7 @@ function renderBoard() {
       const p = pm[s.key];
       if (p) {
         const pl = player(p.player);
-        h += `<td class="picked${isAdmin() ? ' editable' : ''}" ${isAdmin() ? `data-slot="${esc(s.key)}" title="Edit this pick"` : ''}><span class="nm">${esc(label(pl))}</span>${pl?.age ? ` <span class="ag">(${esc(pl.age)})</span>` : ''}<span class="pk">#${s.n}${pl?.number ? ` · no. ${pl.number}` : ''}</span>${p.took != null ? `<span class="tk" title="Time on the clock">${fmt(p.took)}</span>` : ''}</td>`;
+        h += `<td class="picked${isAdmin() ? ' editable' : ''}" ${isAdmin() ? `data-slot="${esc(s.key)}" title="Edit this pick"` : ''}><span class="nm">${esc(label(pl))}</span>${pl?.age ? ` <span class="ag">(${esc(pl.age)})</span>` : ''}<span class="pk">#${s.n}${pl?.number ? ` · no. ${pl.number}` : ''}${p.sibling ? ' · sibling pick' : ''}</span>${p.took != null ? `<span class="tk" title="Time on the clock">${fmt(p.took)}</span>` : ''}</td>`;
       } else if (cur && cur.key === s.key) h += `<td class="onclock">On the clock<span class="pk" style="color:inherit">#${s.n}</span></td>`;
       else h += `<td class="next">#${s.n}</td>`;
     }
@@ -171,24 +167,32 @@ function renderPool() {
     return;
   }
   const q = $('poolSearch').value.trim().toLowerCase(), age = $('poolAge').value, showT = $('showTaken').checked;
+  // Kids still on a later division's team (Minors returners) can be filtered apart from the rest of the pool.
+  const fromDivs = [...new Set(pool.map((p) => p.from?.division).filter(Boolean))];
+  const fs = $('poolFrom'), fprev = fs.value;
+  fs.hidden = !fromDivs.length;
+  fs.innerHTML = '<option value="">Everyone</option><option value="-">Trying out / new</option>' + fromDivs.map((d) => `<option value="${esc(d)}">${esc(d)} returners</option>`).join('');
+  fs.value = [...fs.options].some((o) => o.value === fprev) ? fprev : '';
+  const from = fs.value;
   const ages = [...new Set(pool.map((p) => p.age).filter(Boolean))].sort((a, b) => a - b);
   const sel = $('poolAge'), prev = sel.value;
   sel.innerHTML = '<option value="">All ages</option>' + ages.map((a) => `<option value="${a}">Age ${a}</option>`).join('');
   sel.value = prev;
   $('poolCount').textContent = `${avail.length} left · ${avail.filter((p) => p.status === 'Registered').length} registered`;
   if (!pool.length) { $('pool').innerHTML = `<li class="empty">No players in this draft yet.${isAdmin() ? ' Kids join as they register, or from the league site\'s Kids tab.' : ''}</li>`; return; }
-  const list = pool.filter((p) => (showT || !taken.has(p.id)) && (!q || p.name.toLowerCase().includes(q) || (p.notes || '').toLowerCase().includes(q)) && (!age || String(p.age) === age))
+  const list = pool.filter((p) => (showT || !taken.has(p.id)) && (!q || p.name.toLowerCase().includes(q) || (p.notes || '').toLowerCase().includes(q)) && (!age || String(p.age) === age)
+      && (!from || (from === '-' ? !p.from : p.from?.division === from)))
     .sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || a.name.localeCompare(b.name));
   if (!list.length) { $('pool').innerHTML = '<li class="empty">No players match.</li>'; return; }
   $('pool').innerHTML = list.map((p) => {
     const tk = taken.has(p.id), by = tk ? team(st.picks.find((x) => x.player === p.id).team)?.name : '';
     const out = OUT.includes(p.status);
     return `<li class="${tk || out ? 'taken' : ''}"><div><div class="nm kp ${out ? 'gone' : ''}" title="${esc(p.status)}"><i class="dot ${dotCls(p.status)}"></i>${p.rank != null ? `<span class="sub">${esc(p.rank)}.</span> ` : ''}${esc(p.name)}</div>
-      <div class="sub">${esc(p.status)}${p.age ? ` · Age ${esc(p.age)}` : ''}${p.prior ? ` · ${esc(p.prior)}` : ''}${p.notes ? ` · ${esc(p.notes)}` : ''}${tk ? ` · ${esc(by)}` : ''}</div></div>
+      <div class="sub">${esc(p.status)}${p.age ? ` · Age ${esc(p.age)}` : ''}${p.prior ? ` · ${esc(p.prior)}` : ''}${p.from && !tk ? ` · <b>trying out${p.from.assumed ? ' (assumed — hasn’t registered yet)' : ''}</b>` : ''}${p.notes ? ` · ${esc(p.notes)}` : ''}${tk ? ` · ${esc(by)}` : ''}</div></div>
       ${!tk && !out && canPick ? `<button class="btn primary" data-draft="${esc(p.id)}" title="Draft to ${esc(t.name)}">Draft</button>` : ''}</li>`;
   }).join('');
 }
-$('poolSearch').oninput = $('poolAge').onchange = $('showTaken').onchange = () => S.st && renderPool();
+$('poolSearch').oninput = $('poolAge').onchange = $('poolFrom').onchange = $('showTaken').onchange = () => S.st && renderPool();
 $('pool').onclick = async (e) => {
   const b = e.target.closest('[data-draft]'); if (!b) return;
   b.disabled = true;
@@ -250,6 +254,14 @@ function renderSetup() {
   $('numbersPanel').hidden = d.format !== 'blind';
   const numbered = poolPlayers().filter((p) => p.number).length;
   $('numbersNote').innerHTML = `${numbered} ${numbered === 1 ? 'kid has' : 'kids have'} a number; ${st.unnumbered} waiting. Handing out numbers shuffles only the kids without one, continuing after the highest number, so a late registration never changes anyone else's number. Reshuffling all is only possible before the first pick.`;
+  $('siblingPanel').hidden = d.format === 'blind';
+  const avail = poolPlayers().filter((p) => !takenIds().has(p.id) && !OUT.includes(p.status)).sort((a, b) => a.name.localeCompare(b.name));
+  const sp = $('sibPlayer').value, stt = $('sibTeam').value;
+  $('sibPlayer').innerHTML = '<option value="">Player…</option>' + avail.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}${p.age ? ` (${esc(p.age)})` : ''}</option>`).join('');
+  $('sibTeam').innerHTML = '<option value="">Team…</option>' + st.teams.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('');
+  $('sibPlayer').value = sp; $('sibTeam').value = stt;
+  const sibs = st.picks.filter((x) => x.sibling);
+  $('sibList').innerHTML = sibs.map((x) => `<li>${esc(st.players.find((p) => p.id === x.player)?.name)} — ${esc(team(x.team)?.name)}, round ${x.round} (pick #${x.n})</li>`).join('');
   $('closeDraft').hidden = d.status === 'closed'; $('reopenDraft').hidden = d.status !== 'closed';
   const left = poolPlayers().filter((p) => !takenIds().has(p.id) && !OUT.includes(p.status)).length;
   $('closeNote').innerHTML = d.status === 'closed' ? 'Reopening is only possible until the next draft makes its first pick.'
@@ -274,6 +286,11 @@ $('addTeam').onclick = () => act('POST', `/api/admin/divisions/${S.st.draft.divi
 $('byRecord').onclick = () => act('POST', `/api/admin/divisions/${S.st.draft.divisionId}/teams/order-by-record`, {});
 $('assignNumbers').onclick = () => act('POST', A('/numbers'), {});
 $('clearNumbers').onclick = (e) => { if (e.target.dataset.armed) act('POST', A('/numbers/clear'), {}, 'Numbers cleared'); else { e.target.dataset.armed = '1'; e.target.textContent = 'Click again to reshuffle'; } };
+$('sibAdd').onclick = () => {
+  const body = { playerId: $('sibPlayer').value, teamId: $('sibTeam').value, round: +$('sibRound').value };
+  if (!body.playerId || !body.teamId) return toast('Pick a player and a team', true);
+  act('POST', A('/sibling'), body);
+};
 $('undo').onclick = () => act('POST', A('/undo'), {}, 'Last pick undone');
 $('restartClock').onclick = () => act('POST', A('/clock/start'), {}, 'Clock restarted');
 $('closeDraft').onclick = (e) => { if (e.target.dataset.armed) { act('POST', A('/close'), {}); delete e.target.dataset.armed; e.target.textContent = 'Close draft'; } else { e.target.dataset.armed = '1'; e.target.textContent = 'Click again to close'; } };
@@ -293,35 +310,6 @@ function setTab(t) {
   render();
 }
 document.querySelectorAll('#tabs button').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
-
-/* ---------- gates ---------- */
-function gate(html, bind) { $('app').hidden = true; const g = $('gate'); g.innerHTML = html; g.hidden = false; bind(g); }
-function loginGate() {
-  gate(`<form class="gate" id="lf"><h1><small style="display:block;font-size:.8rem;letter-spacing:.14em;color:var(--muted)">Draft room</small>Admin login</h1>
-    <input type="text" id="lu" placeholder="Username" autocomplete="username" required aria-label="Username">
-    <input type="password" id="lp" placeholder="Password" autocomplete="current-password" required aria-label="Password">
-    <p class="err-text" id="le"></p><button class="btn primary" type="submit">Log in</button><a href="${esc(location.pathname.replace(/\/admin$/, '') || '/')}" class="note">← Back to the draft</a></form>`, (g) => {
-    g.querySelector('#lu').focus();
-    g.querySelector('#lf').onsubmit = async (e) => {
-      e.preventDefault();
-      try { await call('POST', '/api/login', { username: g.querySelector('#lu').value, password: g.querySelector('#lp').value }); location.reload(); }
-      catch (err) { g.querySelector('#le').textContent = err.message; }
-    };
-  });
-}
-function viewerGate() {
-  gate(`<form class="gate" id="vf"><h1><small style="display:block;font-size:.8rem;letter-spacing:.14em;color:var(--muted)">${esc(S.home?.league || 'SE Baseball')}</small>Draft Room</h1>
-    <p class="note">Enter the league's code to watch the draft.</p>
-    <input type="password" id="vc" placeholder="League code" required aria-label="League code">
-    <p class="err-text" id="ve"></p><button class="btn primary" type="submit">Watch the draft</button></form>`, (g) => {
-    g.querySelector('#vc').focus();
-    g.querySelector('#vf').onsubmit = async (e) => {
-      e.preventDefault();
-      try { await call('POST', '/api/viewer', { code: g.querySelector('#vc').value }); location.reload(); }
-      catch (err) { g.querySelector('#ve').textContent = err.message; }
-    };
-  });
-}
 
 /* ---------- boot ---------- */
 async function refresh() {
@@ -345,8 +333,7 @@ function connect() {
   const m = /^\/draft\/([^/]+)\/([^/]+)/.exec(location.pathname);
   S.id = m ? `${decodeURIComponent(m[1])}-${decodeURIComponent(m[2])}` : S.home.draft;
   if (!S.id) { document.body.innerHTML = '<p style="padding:24px">No draft room here. <a href="/">League home</a></p>'; return; }
-  if (/\/admin$/.test(location.pathname) && !S.me.admin) return loginGate();
-  if (!S.me.viewer) return viewerGate();
+  if (!S.me.user) { location.href = `/signin?next=${encodeURIComponent(location.pathname)}`; return; }
   $('app').hidden = false;
   await refresh();
   setTab('board');

@@ -25,4 +25,29 @@ CREATE TABLE IF NOT EXISTS sessions (
   admin_id   INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
   expires_at INTEGER NOT NULL
 );
+
+-- People allowed in, by email. Signing in is by emailed link only; nobody off
+-- this list can see anything but the public registration form.
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  name          TEXT NOT NULL DEFAULT '',
+  role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS login_links (
+  token_hash TEXT PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  next       TEXT NOT NULL DEFAULT '/',
+  expires_at INTEGER NOT NULL,
+  used_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL
+);
 `)

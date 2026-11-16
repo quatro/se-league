@@ -3,7 +3,7 @@
    who has clicked and registered. Shares helpers with app.js. */
 'use strict';
 
-const OS = { campaigns: [], list: [], defaults: null, form: null, preview: null, timer: null, seq: 0, loadedFor: null };
+const OS = { campaigns: [], list: [], defaults: null, interest: null, form: null, preview: null, timer: null, seq: 0, loadedFor: null };
 
 async function loadOutreach() {
   OS.loadedFor = S.sid;
@@ -11,18 +11,23 @@ async function loadOutreach() {
   try {
     const [cs, o] = await Promise.all([call('GET', '/api/admin/campaigns'), call('GET', `/api/admin/outreach?season=${encodeURIComponent(S.sid)}`)]);
     OS.campaigns = cs.filter((c) => c.season_id === S.sid);
-    OS.list = o.list; OS.defaults = o.defaults;
+    OS.list = o.list; OS.defaults = o.defaults; OS.interest = o.interest;
     if (!OS.form || OS.form.seasonId !== S.sid) {
-      let saved = null;
-      try { saved = JSON.parse(localStorage.getItem('league-outreach') || 'null'); } catch { /* private */ }
-      OS.form = { seasonId: S.sid, campaignId: OS.campaigns[0]?.id || '', divisionIds: [], statuses: ['Expected', 'Need to contact'],
-        subject: saved?.subject || o.defaults.subject, body: saved?.body || o.defaults.body };
+      const kind = 'interest', t = savedText(kind);
+      OS.form = { seasonId: S.sid, campaignId: OS.campaigns[0]?.id || '', divisionIds: [], statuses: ['Expected', 'Need to contact'], kind, subject: t.subject, body: t.body };
     }
     renderOutreach();
     refreshPreview();
   } catch (e) { toast(e.message, true); }
 }
 
+// Each kind keeps its own draft text in this browser.
+const tplFor = (kind) => (kind === 'interest' ? OS.interest : OS.defaults);
+function savedText(kind) {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(kind === 'interest' ? 'league-outreach-interest' : 'league-outreach') || 'null'); } catch { /* private */ }
+  return { subject: saved?.subject || tplFor(kind).subject, body: saved?.body || tplFor(kind).body };
+}
 function outreachForm() {
   const f = OS.form, el = $('outreachEditor');
   const val = (id) => el.querySelector('#' + id);
@@ -31,7 +36,7 @@ function outreachForm() {
   f.divisionIds = [...el.querySelectorAll('[data-odiv]:checked')].map((x) => x.value);
   f.statuses = [...el.querySelectorAll('[data-ostatus]:checked')].map((x) => x.value);
   f.subject = val('oSubject').value; f.body = val('oBody').value;
-  try { localStorage.setItem('league-outreach', JSON.stringify({ subject: f.subject, body: f.body })); } catch { /* private */ }
+  try { localStorage.setItem(f.kind === 'interest' ? 'league-outreach-interest' : 'league-outreach', JSON.stringify({ subject: f.subject, body: f.body })); } catch { /* private */ }
   return f;
 }
 
@@ -42,14 +47,18 @@ function renderOutreach() {
   const sts = ['Expected', 'Need to contact'].map((s) => `<label class="chk"><input type="checkbox" data-ostatus value="${esc(s)}" ${f.statuses.includes(s) ? 'checked' : ''}> ${esc(s)}</label>`).join('');
   ed.innerHTML = `
   <div class="panel wide"><div class="hd"><h2>Email returning families</h2><div class="row" id="oMail"></div></div><div class="bd">
-    <p class="note">Asks returning families to register early, so we know our numbers sooner. Each parent email on file gets <b>one</b> message covering all of their kids, with a <b>personal link</b> that opens the registration form already filled in. Kids already Registered are never emailed — so sending again later only reaches the families who haven't signed up yet.</p>
-    ${OS.campaigns.length ? '' : `<p class="err-text">There's no ${S.st.season.year} registration campaign yet — create one on the Signups tab first.</p>`}
-    <div class="row"><label for="oCampaign">Sign up for</label><select id="oCampaign" style="width:auto">${OS.campaigns.map((c) => `<option value="${esc(c.id)}" ${c.id === f.campaignId ? 'selected' : ''}>${esc(c.name)} · ${esc(c.status)}</option>`).join('')}</select></div>
+    <fieldset class="okind" role="radiogroup" aria-label="What to send">
+      <label class="${f.kind === 'interest' ? 'on' : ''}"><input type="radio" name="okind" value="interest" ${f.kind === 'interest' ? 'checked' : ''}><span><b>Interest check</b><small>“Is Sam playing this year?” One click per kid — <i>Yes</i>, <i>Not this year</i> or <i>Not sure</i>. No form, no payment. “Not this year” frees the seat held for them.</small></span></label>
+      <label class="${f.kind === 'register' ? 'on' : ''}"><input type="radio" name="okind" value="register" ${f.kind === 'register' ? 'checked' : ''}><span><b>Registration invite</b><small>A personal link that opens the registration form already filled in.</small></span></label>
+    </fieldset>
+    <p class="note">Each parent email on file gets <b>one</b> message covering all of their kids. Kids already Registered are never emailed — so sending again later only reaches the families who haven't ${f.kind === 'interest' ? 'answered or ' : ''}signed up yet.</p>
+    ${OS.campaigns.length ? '' : `<p class="err-text">There's no ${S.st.season.year} registration yet — create one on the Registration tab first.</p>`}
+    <div class="row"><label for="oCampaign">Register for</label><select id="oCampaign" style="width:auto">${OS.campaigns.map((c) => `<option value="${esc(c.id)}" ${c.id === f.campaignId ? 'selected' : ''}>${esc(c.name)} · ${esc(c.status)}</option>`).join('')}</select></div>
     <div class="row" style="align-items:flex-start"><label>Divisions</label><div class="row" style="flex:1;gap:4px 14px">${divs}<span class="sub">(none ticked = all)</span></div></div>
     <div class="row"><label>Returners who are</label><div class="row" style="gap:4px 14px">${sts}</div></div>
     <div class="row"><label for="oSubject">Subject</label><input type="text" id="oSubject" value="${esc(f.subject)}" style="flex:1"></div>
     <textarea id="oBody" rows="14" aria-label="Message">${esc(f.body)}</textarea>
-    <p class="note">Fill-ins: <code>{parent_first}</code> <code>{players}</code> (first names, “Sam and Ella”) <code>{player_details}</code> (each kid's division and team) <code>{link}</code> (their personal link — required) <code>{season}</code> <code>{league}</code>. <button class="mini" id="oReset">Reset to the standard message</button></p>
+    <p class="note">Fill-ins: <code>{parent_first}</code> <code>{players}</code> (first names, “Sam and Ella”) <code>{player_details}</code> (each kid's division and team) ${f.kind === 'interest' ? '<code>{answer_buttons}</code> (the three answer buttons for each kid — required)' : '<code>{link}</code> (their personal link — required)'} <code>{season}</code> <code>{league}</code>. <button class="mini" id="oReset">Reset to the standard message</button></p>
     <div id="oPreview"><p class="note">Counting families…</p></div>
     <div class="row"><button class="btn primary" id="oSend" disabled>Send</button><button class="btn" id="oExport">Export list with personal links</button>
       <span class="spacer"></span><input type="email" id="oTestTo" placeholder="you@example.com" style="width:200px" aria-label="Send a test to"><button class="btn" id="oTest">Send me a test</button></div>
@@ -87,23 +96,30 @@ function refreshPreview() {
 
 function renderOutreachList() {
   const t = $('oList'); if (!t) return;
-  t.innerHTML = '<tr><th>When (UTC)</th><th>Subject</th><th>For</th><th class="num">Parents</th><th>Delivery</th><th class="num">Clicked</th><th class="num">Registered</th><th></th></tr>'
-    + (OS.list.length ? OS.list.map((o) => `<tr data-out="${esc(o.id)}"><td class="sub">${esc(o.created_at)}</td><td>${esc(o.subject)}</td>
+  t.innerHTML = '<tr><th>When (UTC)</th><th>Subject</th><th>For</th><th class="num">Parents</th><th>Delivery</th><th class="num">Clicked</th><th>Answers / registered</th><th></th></tr>'
+    + (OS.list.length ? OS.list.map((o) => `<tr data-out="${esc(o.id)}"><td class="sub">${esc(o.created_at)}</td><td>${o.kind === 'interest' ? '<span class="chip">Interest check</span> ' : ''}${esc(o.subject)}</td>
       <td class="sub">${esc(o.campaign)}${o.filter.divisionIds.length ? ` · ${o.filter.divisionIds.map((id) => esc(div(id)?.name || '?')).join(', ')}` : ''}</td>
       <td class="num">${o.families}</td>
       <td>${[o.sent && `${o.sent} sent`, o.exported && `${o.exported} exported`, o.failed && `<span class="err-text">${o.failed} failed</span>`, o.queued && `${o.queued} not sent`].filter(Boolean).join(' · ')}</td>
-      <td class="num">${o.clicked}</td><td class="num">${o.registered} of ${o.kids} kids</td>
+      <td class="num">${o.clicked}</td><td>${o.kind === 'interest' ? answersBar(o.answers) : ''}<div class="sub">${o.registered} of ${o.kids} kids registered</div></td>
       <td class="row" style="flex-wrap:nowrap"><button class="mini" data-oview>Families</button>${o.failed || o.queued ? '<button class="mini" data-oretry>Send the rest</button>' : ''}<a class="mini btn" href="/api/admin/outreach/${encodeURIComponent(o.id)}/export.csv">CSV</a></td></tr>`).join('')
       : '<tr><td colspan="8" class="note">Nothing sent for this season yet.</td></tr>');
 }
 
+// Yes / not sure / no / no answer for an interest check, as a small stacked bar with the counts spelled out.
+function answersBar(a) {
+  const tot = a.yes + a.no + a.unsure + a.none || 1, seg = (n, cls) => (n ? `<i class="${cls}" style="width:${(100 * n / tot).toFixed(1)}%"></i>` : '');
+  return `<div class="ansbar" role="img" aria-label="${a.yes} yes, ${a.unsure} not sure, ${a.no} not this year, ${a.none} no answer">${seg(a.yes, 'y')}${seg(a.unsure, 'u')}${seg(a.no, 'n')}</div>
+    <div class="anskey"><span><i class="y"></i>${a.yes} yes</span><span><i class="u"></i>${a.unsure} not sure</span><span><i class="n"></i>${a.no} no</span><span class="sub">${a.none} no answer</span></div>`;
+}
+const INTENT = { yes: ['Yes, playing', 'good'], no: ['Not this year', ''], unsure: ['Not sure', 'meh'] };
 async function showOutreach(id) {
   const o = await act('GET', `/api/admin/outreach/${encodeURIComponent(id)}`); if (!o) return;
   openDialog(`<div class="dlg"><h2>${esc(o.subject)}</h2>
-    <p class="note">${o.sent} sent · ${o.clicked} clicked their link · ${o.registered} of ${o.kids} kids registered since.</p>
+    <p class="note">${o.sent} sent · ${o.clicked} clicked their link · ${o.registered} of ${o.kids} kids registered since.</p>${o.kind === 'interest' ? answersBar(o.answers) : ''}
     <div class="scroll"><table class="kt"><tr><th>Family</th><th>Players</th><th>Email</th><th>Clicked</th></tr>
     ${o.messages.map((m) => `<tr><td><b>${esc(m.name || '—')}</b><div class="sub">${esc(m.email)}</div></td>
-      <td>${m.kids.map((k) => `<div><button class="mini" data-kid="${esc(k.id)}" style="border:0;background:none;padding:0;font-weight:600">${esc(k.name)}</button> <i class="dot ${dotCls(k.status)}"></i> <span class="sub">${esc(k.status)}</span></div>`).join('')}</td>
+      <td>${m.kids.map((k) => `<div><button class="mini" data-kid="${esc(k.id)}" style="border:0;background:none;padding:0;font-weight:600">${esc(k.name)}</button> <i class="dot ${dotCls(k.status)}"></i> <span class="sub">${esc(k.status)}</span>${o.kind === 'interest' && k.intent ? ` <span class="chip ${INTENT[k.intent][1]}">${INTENT[k.intent][0]}</span>` : ''}</div>`).join('')}</td>
       <td>${esc(m.status)}${m.error ? `<div class="err-text">${esc(m.error)}</div>` : ''}${m.sent_at ? `<div class="sub">${esc(m.sent_at)}</div>` : ''}</td>
       <td class="sub">${esc(m.clicked_at || '')}</td></tr>`).join('')}</table></div>
     <div class="row"><span class="spacer"></span><button class="btn" data-close>Close</button></div></div>`, (dl) => {
@@ -114,12 +130,13 @@ async function showOutreach(id) {
 $('outreachEditor').addEventListener('input', (e) => { if (e.target.closest('#oSubject, #oBody')) refreshPreview(); });
 $('outreachEditor').addEventListener('change', (e) => {
   if (e.target.matches('#oCampaign, [data-odiv], [data-ostatus]')) refreshPreview();
+  if (e.target.name === 'okind') { outreachForm(); const k = e.target.value, t = savedText(k); Object.assign(OS.form, { kind: k, subject: t.subject, body: t.body }); renderOutreach(); refreshPreview(); }
   if (e.target.id === 'cFile' && e.target.files[0]) e.target.files[0].text().then((t) => ($('cCsv').value = t));
 });
 $('outreachEditor').addEventListener('click', async (e) => {
   const t = e.target;
   const kb = t.closest('[data-kid]'); if (kb) return showKid(kb.dataset.kid);
-  if (t.id === 'oReset') { $('oSubject').value = OS.defaults.subject; $('oBody').value = OS.defaults.body; return refreshPreview(); }
+  if (t.id === 'oReset') { const d = tplFor(OS.form.kind); $('oSubject').value = d.subject; $('oBody').value = d.body; return refreshPreview(); }
   if (t.id === 'oTest') { const r = await act('POST', '/api/admin/outreach/test', { ...outreachForm(), to: $('oTestTo').value.trim() }); return r; }
   if (t.id === 'oSend') {
     const n = OS.preview?.families || 0;

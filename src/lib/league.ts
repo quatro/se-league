@@ -118,6 +118,16 @@ export function divisionForAge(list: Division[], age: number | null, priorKey: s
 /** A division nobody registers into directly — it fills from returners and its draft (Majors). */
 export const isDraftOnly = (d: Division) => d.se_match.trim() === '-'
 
+/**
+ * A division whose kids can try out for a shared group's first draft (Majors): its own Minors
+ * returners, or the age just below the group (9s). Until a family registers and answers, these
+ * kids are assumed to be trying out.
+ */
+export function canTryOut(d: Division): boolean {
+  if (d.group_key) return !isDraftOnly(d)
+  return divisions(d.season_id).some((x) => x.group_key && x.sort > d.sort && x.min_age != null && d.max_age != null && d.max_age >= x.min_age - 1)
+}
+
 export interface DivisionInput {
   name: string; teams: number; roster_size: number; coaches?: number | null; min_age?: number | null; max_age?: number | null
   se_match?: string; group_key?: string; keep_teams?: boolean; closed?: boolean; notes?: string; key?: string; sort?: number
@@ -273,7 +283,8 @@ function groupChain(seasonId: string, groupKey: string): Draft[] {
  * Which draft pool a kid belongs in right now. Kids on a team (returners) are
  * in no pool. Inside a group, a kid trying out starts in the first open draft
  * (Majors); everyone else in the group waits for their home division's draft
- * (Minors). A 9-year-old trying out joins the group that fits their age.
+ * (Minors). A 9-year-old trying out is in the group's first draft (Majors) only:
+ * Minors stays 10–12, so a 9 not picked for Majors goes back to their own division.
  */
 export function poolFor(e: Enrollment, s: Season, birthdate: string | null): string | null {
   // Waitlisted kids haven't got a seat yet, so they aren't draftable.
@@ -290,8 +301,9 @@ export function poolFor(e: Enrollment, s: Season, birthdate: string | null): str
   if (groupKey && (e.tryout || home.group_key)) {
     const chain = groupChain(s.id, groupKey)
     if (e.tryout) {
+      // Playing up (a 9): Majors only. Undrafted, they stay in their own division (the 9-Year-Old League).
+      if (!home.group_key) return chain[0]?.status === 'open' ? chain[0].id : own?.status === 'open' ? own.id : null
       const open = chain.find((r) => r.status === 'open')
-      // A 9 trying out who goes undrafted in every group draft stays in their own division.
       return open?.id ?? (own?.status === 'open' ? own.id : null)
     }
     // Not trying out: the home division's draft, once the drafts before it have closed.

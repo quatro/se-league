@@ -1,10 +1,11 @@
 import { db } from '../db.js'
 import { config } from '../config.js'
 import {
-  ageIn, audit, changed, HOLDS_SEAT, createKid, divisions, enroll, fitsAge, isDraftOnly, mustSeason, refreshPools, season, seasonState, slugOk,
+  ageIn, audit, canTryOut, changed, HOLDS_SEAT, createKid, division, divisions, enroll, fitsAge, isDraftOnly, mustSeason, refreshPools, season, seasonState, setTryout, slugOk, team,
   UserError, type Kid, type Season,
 } from './league.js'
 import { addContact } from './contacts.js'
+import { balancePaid, createPlan, firstPaymentIn, installmentsFor, payLink, planFor, saveCard, today } from './plans.js'
 import { mailConfigured, sendBatch } from './mailer.js'
 import { createCheckout, getCheckout, stripeConfigured, stripeMode, type LineItem } from './stripe.js'
 import { leagueAge, nameKey, normDate, uid } from './text.js'
@@ -21,14 +22,17 @@ import { randomBytes } from 'node:crypto'
 // switched to "waitlist only") go on a free waitlist, first come first served;
 // an admin later offers a spot with a personal pay link that has a deadline.
 
-export interface Campaign { id: string; slug: string; name: string; season_id: string | null; status: 'draft' | 'open' | 'closed'; opens_at: string | null; closes_at: string | null; intro: string; confirmation: string; created_at: string }
-export interface Offering { id: string; campaign_id: string; division_id: string | null; name: string; description: string; min_age: number | null; max_age: number | null; capacity: number | null; waitlist: number; sort: number; active: number; reg_mode: RegMode }
+export interface Campaign { id: string; slug: string; name: string; season_id: string | null; status: 'draft' | 'open' | 'closed'; opens_at: string | null; closes_at: string | null; intro: string; confirmation: string; created_at: string
+  plan_installments: number; plan_final_date: string | null; plan_min_cents: number; kind: CampaignKind }
+export type CampaignKind = 'spring' | 'standard'
+export interface Offering { id: string; campaign_id: string; division_id: string | null; name: string; description: string; min_age: number | null; max_age: number | null; capacity: number | null; waitlist: number; sort: number; active: number; reg_mode: RegMode; when_full: WhenFull; protect_at: number | null }
+export type WhenFull = 'waitlist' | 'close'
 export type RegMode = 'open' | 'waitlist' | 'closed'
 export interface Item { id: string; campaign_id: string; name: string; description: string; price_cents: number; required: number; max_qty: number; offering_ids: string; tag: string; sort: number; active: number }
 export interface Question { id: string; campaign_id: string; scope: 'player' | 'family'; label: string; help: string; type: QType; options: string; required: number; offering_ids: string; sort: number; active: number; new_only: number }
 export type QType = 'text' | 'textarea' | 'number' | 'date' | 'yesno' | 'select' | 'multi' | 'agreement'
 export interface Order { id: string; campaign_id: string; status: 'pending' | 'paid' | 'waitlisted' | 'cancelled' | 'refunded'; guardian: string; answers: string; total_cents: number; stripe_session_id: string | null; stripe_payment_id: string | null; stripe_mode: string | null; created_at: string; paid_at: string | null; se_synced_at: string | null; admin_notes: string }
-export interface OrderPlayer { id: string; order_id: string; first_name: string; last_name: string; birthdate: string; gender: string; offering_id: string; status: 'pending' | 'registered' | 'waitlisted' | 'offered' | 'cancelled'; answers: string; kid_id: string | null; enrollment_id: string | null; offer_session_id: string | null; prior_match: string; offer_token: string | null; offer_expires_at: string | null }
+export interface OrderPlayer { id: string; order_id: string; first_name: string; last_name: string; birthdate: string; gender: string; offering_id: string; status: 'pending' | 'registered' | 'waitlisted' | 'offered' | 'cancelled'; answers: string; kid_id: string | null; enrollment_id: string | null; offer_session_id: string | null; prior_match: string; held_seat: number; offer_token: string | null; offer_expires_at: string | null }
 
 const J = <T>(s: string, d: T): T => { try { return JSON.parse(s) as T } catch { return d } }
 const appliesTo = (ids: string, offeringId: string) => { const l = J<string[]>(ids, []); return !l.length || l.includes(offeringId) }
@@ -37,7 +41,7 @@ const appliesTo = (ids: string, offeringId: string) => { const l = J<string[]>(i
 export const campaigns = () => db.prepare('SELECT * FROM campaigns ORDER BY created_at DESC').all() as Campaign[]
 export const campaign = (id: string) => db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id) as Campaign | undefined
 export const campaignBySlug = (s: string) => db.prepare('SELECT * FROM campaigns WHERE slug = ?').get(s) as Campaign | undefined
-export function mustCampaign(id: string): Campaign { const c = campaign(id); if (!c) throw new UserError('Unknown campaign'); return c }
+export function mustCampaign(id: string): Campaign { const c = campaign(id); if (!c) throw new UserError('Unknown registration'); return c }
 export const offerings = (cid: string) => db.prepare('SELECT * FROM offerings WHERE campaign_id = ? ORDER BY sort, name').all(cid) as Offering[]
 export const items = (cid: string) => db.prepare('SELECT * FROM items WHERE campaign_id = ? ORDER BY sort, name').all(cid) as Item[]
 export const questions = (cid: string) => db.prepare('SELECT * FROM questions WHERE campaign_id = ? ORDER BY scope DESC, sort, label').all(cid) as Question[]
@@ -52,25 +56,40 @@ function ageSeason(c: Campaign): Season {
 }
 
 /**
- * Seats a new signup can take: the division's (or Majors+Minors group's) open seats, or a
- * standalone cap, less everyone already on the waitlist — a seat that opens up goes to the
- * families waiting in line, not to whoever registers next. "Waitlist only" makes it full outright.
+ * Spots a new player can take in this program: the program's own limit (set per program on the
+ * Registration tab), less every new player already registered or waiting — a spot that opens goes to
+ * the families waiting in line, not to whoever registers next. Returners holding their seat don't
+ * count. No limit = never full. "Waitlist only" makes it full outright.
  */
-export function availability(o: Offering): { open: number | null; full: boolean } {
-  const held = o.reg_mode === 'waitlist'
-  if (o.division_id) {
-    const d = db.prepare('SELECT * FROM divisions WHERE id = ?').get(o.division_id) as { season_id: string; group_key: string; closed: number } | undefined
-    if (!d) return { open: null, full: held }
-    const st = seasonState(d.season_id, false)
-    const seats = d.group_key ? st.groups.find((g) => g.key === d.group_key)?.seats : st.divisions.find((x) => x.id === o.division_id)?.seats
-    if (!seats || !seats.capacity) return { open: null, full: held || !!d.closed }
-    const open = seats.open - seats.waitlist
-    return { open, full: held || open <= 0 || !!d.closed }
-  }
-  if (o.capacity == null) return { open: null, full: held }
-  const n = (db.prepare(`SELECT COUNT(*) n FROM order_players WHERE offering_id = ? AND status IN ('registered','waitlisted','offered')`).get(o.id) as { n: number }).n
-  return { open: o.capacity - n, full: held || n >= o.capacity }
+export type Phase = 'open' | 'protected' | 'full' | 'waitlist'
+export interface Guard { capacity: number; registered: number; outstanding: number; waitlist: number; buffer: number; protectAt: number | null }
+export function availability(o: Offering): { open: number | null; full: boolean; taken: number; phase: Phase; guard: Guard | null } {
+  const taken = (db.prepare(`SELECT COUNT(*) n FROM order_players WHERE offering_id = ? AND held_seat = 0 AND status IN ('registered','waitlisted','offered')`).get(o.id) as { n: number }).n
+  const capFull = o.capacity != null && taken >= o.capacity
+  const guard = guardOf(o)
+  // Returner protection: once the buffer is down to the line, new players wait while returners register.
+  const guarding = !!guard && guard.protectAt != null && guard.buffer <= guard.protectAt
+  const phase: Phase = o.reg_mode === 'waitlist' ? 'waitlist' : capFull || (guarding && guard!.buffer <= 0) ? 'full' : guarding ? 'protected' : 'open'
+  return { open: o.capacity == null ? null : o.capacity - taken, full: phase !== 'open', taken, phase, guard }
 }
+/**
+ * Spring league only: the division's (or Majors+Minors group's) buffer — seats not yet taken by registered
+ * players or held for returners still to register, less the waitlist already in line. 50 open with 40
+ * returners outstanding is a buffer of 10.
+ */
+function guardOf(o: Offering): Guard | null {
+  if (!o.division_id) return null
+  const c = campaign(o.campaign_id)
+  if (!c || c.kind !== 'spring') return null
+  const d = db.prepare('SELECT season_id, group_key FROM divisions WHERE id = ?').get(o.division_id) as { season_id: string; group_key: string } | undefined
+  if (!d) return null
+  const st = seasonState(d.season_id, false)
+  const seats = d.group_key ? st.groups.find((g) => g.key === d.group_key)?.seats : st.divisions.find((x) => x.id === o.division_id)?.seats
+  if (!seats || !seats.capacity) return null
+  return { capacity: seats.capacity, registered: seats.registered, outstanding: seats.held, waitlist: seats.waitlist, buffer: seats.open - seats.waitlist, protectAt: o.protect_at }
+}
+/** Full and not keeping a waitlist: new players can't register for it at all. (Protection always waitlists — spots may still open.) */
+export const shutFor = (o: Offering, a: { phase: Phase }) => a.phase === 'full' && o.when_full === 'close'
 
 // An admin may run test checkouts on a draft campaign while Stripe is in test mode, so the form can be tried end to end before families see it.
 const adminTest = (c: Campaign, admin: boolean) => admin && c.status === 'draft' && stripeMode() === 'test'
@@ -93,11 +112,14 @@ export function publicCampaign(slugStr: string, preview = false) {
     campaign: { name: c.name, slug: c.slug, intro: c.intro, closedReason: isOpen(c, preview), preview: preview && c.status === 'draft', year: s.year, ageCutoff: s.age_cutoff },
     offerings: offerings(c.id).filter((o) => o.reg_mode !== 'closed').map((o) => {
       const a = availability(o)
-      return { id: o.id, name: o.name, description: o.description, min_age: o.min_age, max_age: o.max_age, full: a.full, left: a.open != null && a.open <= 10 ? Math.max(0, a.open) : null }
+      return { id: o.id, name: o.name, description: o.description, min_age: o.min_age, max_age: o.max_age, full: a.full, waitlist: !shutFor(o, a), protected: a.phase === 'protected', left: a.open != null && a.open <= 10 ? Math.max(0, a.open) : null,
+        tryout: offeringAsksTryout(o) }
     }),
     items: items(c.id).filter((i) => i.active).map((i) => ({ id: i.id, name: i.name, description: i.description, price_cents: i.price_cents, required: !!i.required, max_qty: i.max_qty, offering_ids: J<string[]>(i.offering_ids, []) })),
     questions: questions(c.id).filter((q) => q.active).map((q) => ({ id: q.id, scope: q.scope, label: q.label, help: q.help, type: q.type, options: J<string[]>(q.options, []), required: !!q.required, offering_ids: J<string[]>(q.offering_ids, []), new_only: !!q.new_only })),
     stripe: stripeConfigured() ? stripeMode() : null,
+    // Interest-free installments the family can choose at checkout (the form shows the schedule; checkout re-checks it).
+    plan: c.plan_installments >= 2 && c.plan_final_date ? { installments: c.plan_installments, finalDate: c.plan_final_date, minCents: c.plan_min_cents, today: today() } : null,
   }
 }
 
@@ -113,25 +135,137 @@ export function returningMatches(c: Campaign, first: string, last: string, dob: 
   const born = normDate(dob)
   const priorAge = born && prior ? leagueAge(born, prior.year, prior.age_cutoff) : null
   if (!prior || !first.trim() || !last.trim() || !born || priorAge == null) return []
-  const rows = db.prepare(`SELECT k.id, k.name, k.birthdate, p.status, p.age, p.eff_team_id, d.name AS division, d.min_age, d.max_age, t.name AS team
+  const fullKey = nameKey(`${first} ${last}`), firstKey = nameKey(first), lastKey = nameKey(last)
+  if (!firstKey || !lastKey) return []
+  // Everyone on last season's rosters with this last name, or this exact full name.
+  const rows = (db.prepare(`SELECT k.id, k.name, k.name_key, k.birthdate, p.status, p.age, p.eff_team_id, d.name AS division, d.min_age, d.max_age, t.name AS team
     FROM placements p JOIN kids k ON k.id = p.kid_id LEFT JOIN divisions d ON d.id = p.eff_division_id LEFT JOIN teams t ON t.id = p.eff_team_id
-    WHERE p.season_id = ? AND (k.name_key = ? OR (k.birthdate = ? AND k.name_key LIKE ?))`)
-    .all(prior.id, nameKey(`${first} ${last}`), born, `% ${nameKey(last)}`) as { id: string; name: string; birthdate: string | null; status: string; age: number | null; eff_team_id: string | null; division: string | null; min_age: number | null; max_age: number | null; team: string | null }[]
-  const played = rows.filter((r) => r.status === 'Registered' || r.eff_team_id).filter((r) => {
+    WHERE p.season_id = ? AND (k.name_key = ? OR k.name_key LIKE ?)`)
+    .all(prior.id, fullKey, `% ${lastKey}`) as { id: string; name: string; name_key: string; birthdate: string | null; status: string; age: number | null; eff_team_id: string | null; division: string | null; min_age: number | null; max_age: number | null; team: string | null }[])
+    .filter((r) => r.status === 'Registered' || r.eff_team_id)
+  const firstOf = (r: { name_key: string }) => r.name_key.slice(0, r.name_key.length - lastKey.length - 1)
+  const full = (r: typeof rows[number]) => ({
+    id: r.id, name: r.name, year: prior.year, division: r.division, team: r.team, suggestOfferingId: suggestedOffering(c, r.id),
+    // The program where a seat is already held for them: full or not, they register and pay there.
+    seatOfferingId: offerings(c.id).find((o) => o.active && holdsSeatIn(c, r.id, o))?.id ?? null,
+    tryoutTeam: tryoutTeam(c, r.id), dobDiffers: false,
+  })
+  // 1. Exact: the full name, and the birthdate (or, with none on file, an age that fits).
+  const exact = rows.filter((r) => r.name_key === fullKey).filter((r) => {
     if (r.birthdate) return r.birthdate === born
     if (r.age != null) return Math.abs(r.age - priorAge) <= 1
     return (r.min_age == null || priorAge >= r.min_age - 1) && (r.max_age == null || priorAge <= r.max_age + 1)
   })
-  return played.slice(0, 3).map((r) => ({
-    id: r.id, name: r.name, year: prior.year, division: r.division, team: r.team, suggestOfferingId: suggestedOffering(c, r.id),
-    // The program where a seat is already held for them: full or not, they register and pay there.
-    seatOfferingId: offerings(c.id).find((o) => o.active && holdsSeatIn(c, r.id, o))?.id ?? null,
-  }))
+  if (exact.length) return exact.slice(0, 3).map(full)
+  // 2. Same last name and birthdate, first name a near miss (Will/William, Jon/John, a typo). The birthdate
+  //    and last name check out, so they're shown in full. A twin with a different first name isn't a near miss.
+  const nick = rows.filter((r) => r.birthdate === born && r.name_key !== fullKey && firstClose(firstKey, firstOf(r)))
+  if (nick.length) return nick.slice(0, 3).map(full)
+  // 3. The full name, birthdate a little off (a day, a month, a year, or day and month swapped). Ask — but
+  //    say nothing about their team or program, since the birthdate didn't check out; the office sees the
+  //    mismatch when they register.
+  return rows.filter((r) => r.name_key === fullKey && r.birthdate && dobClose(r.birthdate, born))
+    .slice(0, 1).map((r) => ({ id: r.id, name: r.name, year: prior.year, division: null, team: null, suggestOfferingId: null, seatOfferingId: null, tryoutTeam: null, dobDiffers: true }))
+}
+
+/** A birthdate that's probably a slip: one part off by a little, or the day and month swapped. */
+export function dobClose(a: string, b: string): boolean {
+  const [y1, m1, d1] = a.split('-').map(Number), [y2, m2, d2] = b.split('-').map(Number)
+  if ([y1, m1, d1, y2, m2, d2].some((n) => !Number.isFinite(n))) return false
+  if (a === b) return true
+  if (y1 === y2 && m1 === d2 && d1 === m2) return true
+  const dy = Math.abs(y1! - y2!), dm = Math.abs(m1! - m2!), dd = Math.abs(d1! - d2!)
+  const parts = [dy, dm, dd].filter((n) => n > 0).length
+  if (parts === 1) return dy === 1 || (dm > 0 && dm <= 2) || (dd > 0 && dd <= 3)
+  // Or simply within a couple of weeks (e.g. 31 Jan vs 2 Feb).
+  return Math.abs(Date.parse(a) - Date.parse(b)) <= 14 * 864e5
+}
+
+/** A first name that's probably the same kid: a short form (Will/William), or a typo or two. */
+export function firstClose(a: string, b: string): boolean {
+  if (!a || !b) return false
+  if (a === b) return true
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a]
+  if (s.length >= 3 && l.startsWith(s)) return true
+  const NICK: Record<string, string[]> = { william: ['bill', 'billy', 'liam'], robert: ['bob', 'bobby', 'rob'], richard: ['rick', 'dick', 'ricky'], james: ['jim', 'jimmy', 'jamie'],
+    john: ['jack', 'johnny', 'jon'], jonathan: ['jon', 'jonny'], edward: ['ed', 'eddie', 'ted', 'ned'], elizabeth: ['liz', 'beth', 'eliza', 'lizzie'], katherine: ['kate', 'katie', 'kat'],
+    catherine: ['cate', 'cathy', 'katie'], margaret: ['maggie', 'meg', 'peggy'], michael: ['mike', 'mikey'], nicholas: ['nick', 'nicky', 'cole'], christopher: ['chris', 'topher'],
+    alexander: ['alex', 'xander', 'zander'], benjamin: ['ben', 'benny'], samuel: ['sam', 'sammy'], joseph: ['joe', 'joey'], daniel: ['dan', 'danny'], matthew: ['matt'],
+    anthony: ['tony'], thomas: ['tom', 'tommy'], charles: ['charlie', 'chuck', 'chaz'], henry: ['hank'], theodore: ['theo', 'teddy', 'ted'], zachary: ['zach', 'zack'], andrew: ['drew', 'andy'] }
+  for (const [n, short] of Object.entries(NICK)) if ((a === n && short.includes(b)) || (b === n && short.includes(a)) || (short.includes(a) && short.includes(b))) return true
+  return lev(a, b) <= (s.length >= 5 ? 2 : 1)
+}
+function lev(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = cur
+  }
+  return prev[b.length]!
+}
+
+/**
+ * Brothers and sisters of a returning player, offered so the family can add them in one click.
+ * Only when the details are right on both counts: the player's name and birthdate match a kid
+ * on last season's rosters exactly, and the parent's email or mobile is one we have on file for
+ * that kid. Anyone else gets nothing, so a stranger can't use a name to see who else is in a family.
+ * Siblings are the other kids under the same parent email or phone who played last season.
+ */
+export function siblingMatches(c: Campaign, first: string, last: string, dob: string, email: string, phone: string) {
+  const born = normDate(dob)
+  const mail = email.trim().toLowerCase(), tel = phone.replace(/\D/g, '').slice(-10)
+  if (!born || (!mail && tel.length < 10)) return []
+  const kid = returningMatches(c, first, last, dob).map((m) => db.prepare('SELECT * FROM kids WHERE id = ?').get(m.id) as Kid).find((k) => k?.birthdate === born)
+  if (!kid) return []
+  const mine = db.prepare('SELECT email, phone FROM contacts WHERE kid_id = ?').all(kid.id) as { email: string; phone: string }[]
+  const telOf = (p: string) => p.replace(/\D/g, '').slice(-10)
+  const mailOk = !!mail && mine.some((x) => x.email === mail)
+  const telOk = tel.length === 10 && mine.some((x) => telOf(x.phone) === tel)
+  if (!mailOk && !telOk) return []
+  const emails = [...new Set(mine.map((x) => x.email).filter(Boolean))], phones = new Set(mine.map((x) => telOf(x.phone)).filter((p) => p.length === 10))
+  const ids = new Set<string>()
+  for (const r of db.prepare(`SELECT kid_id, email, phone FROM contacts WHERE kid_id != ?`).all(kid.id) as { kid_id: string; email: string; phone: string }[])
+    if ((r.email && emails.includes(r.email)) || phones.has(telOf(r.phone))) ids.add(r.kid_id)
+  const s = ageSeason(c)
+  const out: { kidId: string; firstName: string; lastName: string; birthdate: string; division: string | null; team: string | null; year: number; registered: boolean }[] = []
+  for (const id of ids) {
+    const k = db.prepare('SELECT * FROM kids WHERE id = ?').get(id) as Kid | undefined
+    if (!k?.birthdate) continue
+    const parts = k.name.trim().split(/\s+/), firstName = parts[0] ?? '', lastName = parts.slice(1).join(' ')
+    // Must have played last season (the same check as the returning-player lookup) and still fit a program here.
+    const m = returningMatches(c, firstName, lastName, k.birthdate).find((x) => x.id === id)
+    if (!m) continue
+    const age = leagueAge(k.birthdate, s.year, s.age_cutoff)
+    if (!offerings(c.id).some((o) => o.active && (o.min_age == null || age == null || age >= o.min_age) && (o.max_age == null || age == null || age <= o.max_age))) continue
+    const cur = c.season_id ? (db.prepare('SELECT status FROM enrollments WHERE season_id = ? AND kid_id = ?').get(c.season_id, id) as { status: string } | undefined) : undefined
+    if (cur && (cur.status === 'Not returning' || cur.status === 'Withdrawn')) continue
+    out.push({ kidId: id, firstName, lastName, birthdate: k.birthdate, division: m.division, team: m.team, year: m.year, registered: cur?.status === 'Registered' })
+  }
+  return out.sort((a, b) => a.birthdate.localeCompare(b.birthdate)).slice(0, 6)
+}
+
+/**
+ * The team this kid holds in a shared group's later division (a Minors team), if any. Those are the
+ * players registration asks "trying out for Majors?" — the answer decides whether they keep it.
+ */
+export function tryoutTeam(c: Campaign, kidId: string): string | null {
+  if (!c.season_id) return null
+  const e = db.prepare(`SELECT e.returning_team_id, e.division_id FROM enrollments e WHERE e.season_id = ? AND e.kid_id = ?`).get(c.season_id, kidId) as { returning_team_id: string | null; division_id: string | null } | undefined
+  const d = e?.division_id ? division(e.division_id) : undefined
+  if (!e?.returning_team_id || !d?.group_key || isDraftOnly(d)) return null
+  return team(e.returning_team_id)?.name ?? null
+}
+
+/** A program whose players can play up (the 9-Year-Old League): everyone registering for it is asked about Majors tryouts. */
+function offeringAsksTryout(o: Offering): boolean {
+  const d = o.division_id ? division(o.division_id) : undefined
+  return !!d && !d.group_key && canTryOut(d)
 }
 
 /** A returner expected back in this program's division (or Majors+Minors group) already holds a seat there: it's theirs to claim. */
 function holdsSeatIn(c: Campaign, kidId: string, o: Offering): boolean {
-  if (!c.season_id || !o.division_id) return false
+  if (!c.season_id || !o.division_id || c.kind !== 'spring') return false
   const e = db.prepare(`SELECT e.status, e.division_id, d.group_key FROM enrollments e JOIN divisions d ON d.id = e.division_id WHERE e.season_id = ? AND e.kid_id = ?`)
     .get(c.season_id, kidId) as { status: string; division_id: string; group_key: string } | undefined
   if (!e || !(HOLDS_SEAT as readonly string[]).includes(e.status)) return false
@@ -150,11 +284,13 @@ function suggestedOffering(c: Campaign, kidId: string): string | null {
 }
 
 // ---------- admin: building a campaign ----------
-export interface CampaignInput { name: string; slug?: string; season_id?: string | null; status?: Campaign['status']; opens_at?: string | null; closes_at?: string | null; intro?: string; confirmation?: string }
+export interface CampaignInput { name: string; slug?: string; season_id?: string | null; status?: Campaign['status']; opens_at?: string | null; closes_at?: string | null; intro?: string; confirmation?: string
+  plan_installments?: number; plan_final_date?: string | null; plan_min_cents?: number; kind?: CampaignKind }
 export function saveCampaign(id: string | null, p: CampaignInput, actor: string): Campaign {
   const name = p.name.trim()
-  if (!name) throw new UserError('Campaign needs a name')
-  const slugStr = (p.slug?.trim() || nameKey(name).replace(/ /g, '-')).toLowerCase()
+  if (!name) throw new UserError('Give the registration a name')
+  // Keep the existing web address unless a new one is given (links already sent must keep working).
+  const slugStr = (p.slug?.trim() || (id ? mustCampaign(id).slug : '') || nameKey(name).replace(/ /g, '-')).toLowerCase()
   if (!slugOk(slugStr)) throw new UserError('Web address can only use letters, numbers and dashes')
   const clash = campaignBySlug(slugStr)
   if (clash && clash.id !== id) throw new UserError(`/register/${slugStr} is already used by ${clash.name}`)
@@ -164,11 +300,21 @@ export function saveCampaign(id: string | null, p: CampaignInput, actor: string)
     db.prepare(`UPDATE campaigns SET name=?, slug=?, season_id=?, status=?, opens_at=?, closes_at=?, intro=?, confirmation=? WHERE id=?`)
       .run(name, slugStr, p.season_id !== undefined ? p.season_id : c.season_id, p.status ?? c.status, p.opens_at !== undefined ? p.opens_at : c.opens_at,
         p.closes_at !== undefined ? p.closes_at : c.closes_at, p.intro ?? c.intro, p.confirmation ?? c.confirmation, id)
+    if (p.kind && p.kind !== c.kind) db.prepare('UPDATE campaigns SET kind = ? WHERE id = ?').run(p.kind, id)
+    if (p.plan_installments !== undefined || p.plan_final_date !== undefined || p.plan_min_cents !== undefined) {
+      const n = p.plan_installments ?? c.plan_installments, fin = p.plan_final_date !== undefined ? p.plan_final_date : c.plan_final_date
+      if (n && (n < 2 || n > 12)) throw new UserError('A payment plan has 2 to 12 payments')
+      if (n && !fin) throw new UserError('Pick the date the last plan payment is due')
+      if (fin && !/^\d{4}-\d{2}-\d{2}$/.test(fin)) throw new UserError('Last payment date should be a date')
+      if (n && fin && (p.plan_final_date !== undefined || p.plan_installments !== undefined) && fin <= today()) throw new UserError('The last plan payment date has to be in the future')
+      db.prepare('UPDATE campaigns SET plan_installments = ?, plan_final_date = ?, plan_min_cents = ? WHERE id = ?').run(n || 0, fin || null, Math.max(0, p.plan_min_cents ?? c.plan_min_cents), id)
+    }
     audit(actor, 'campaign_saved', p.season_id ?? c.season_id, null, { campaign: name, status: p.status ?? c.status })
   } else {
     id = uid()
-    db.prepare(`INSERT INTO campaigns (id, slug, name, season_id, status, opens_at, closes_at, intro, confirmation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, slugStr, name, p.season_id ?? null, p.status ?? 'draft', p.opens_at ?? null, p.closes_at ?? null, p.intro ?? '', p.confirmation ?? '')
+    // The spring league is the one tied to a season unless told otherwise.
+    db.prepare(`INSERT INTO campaigns (id, slug, name, season_id, status, opens_at, closes_at, intro, confirmation, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, slugStr, name, p.season_id ?? null, p.status ?? 'draft', p.opens_at ?? null, p.closes_at ?? null, p.intro ?? '', p.confirmation ?? '', p.kind ?? (p.season_id ? 'spring' : 'standard'))
     audit(actor, 'campaign_added', p.season_id ?? null, null, { campaign: name })
   }
   changed()
@@ -182,7 +328,7 @@ export function saveCampaign(id: string | null, p: CampaignInput, actor: string)
  */
 export function programsFromSeason(campaignId: string, actor: string): number {
   const c = mustCampaign(campaignId)
-  if (!c.season_id) throw new UserError('Pick the season this campaign registers for first')
+  if (!c.season_id) throw new UserError('Pick the season this registration is for first')
   const have = new Set(offerings(c.id).map((o) => o.division_id).filter(Boolean))
   const ds = divisions(c.season_id)
   let n = 0, sort = offerings(c.id).length
@@ -206,18 +352,19 @@ export function programsFromSeason(campaignId: string, actor: string): number {
   return n
 }
 
-export interface OfferingInput { name: string; description?: string; division_id?: string | null; min_age?: number | null; max_age?: number | null; capacity?: number | null; reg_mode?: RegMode; sort?: number }
+export interface OfferingInput { name: string; description?: string; division_id?: string | null; min_age?: number | null; max_age?: number | null; capacity?: number | null; reg_mode?: RegMode; when_full?: WhenFull; protect_at?: number | null; sort?: number }
 export function saveOffering(campaignId: string, id: string | null, p: OfferingInput, actor: string) {
   const c = mustCampaign(campaignId)
   if (!p.name.trim()) throw new UserError('Program needs a name')
-  if (p.division_id && !divisions(c.season_id ?? '').some((d) => d.id === p.division_id)) throw new UserError('That division isn’t in this campaign’s season')
-  const was = id ? (db.prepare('SELECT reg_mode, sort FROM offerings WHERE id = ?').get(id) as { reg_mode: RegMode; sort: number } | undefined) : undefined
+  if (p.division_id && !divisions(c.season_id ?? '').some((d) => d.id === p.division_id)) throw new UserError('That division isn’t in this registration’s season')
+  const was = id ? (db.prepare('SELECT reg_mode, sort, when_full, protect_at FROM offerings WHERE id = ?').get(id) as { reg_mode: RegMode; sort: number; when_full: WhenFull; protect_at: number | null } | undefined) : undefined
+  if (p.capacity != null && p.capacity < 0) throw new UserError('Spots can’t be negative')
   const mode = p.reg_mode ?? was?.reg_mode ?? 'open'
   // active mirrors reg_mode for the code that only asks "is it offered at all".
-  const vals = [p.name.trim(), p.description ?? '', p.division_id ?? null, p.min_age ?? null, p.max_age ?? null, p.capacity ?? null, mode, p.sort ?? was?.sort ?? 0, mode === 'closed' ? 0 : 1]
-  if (id) db.prepare('UPDATE offerings SET name=?, description=?, division_id=?, min_age=?, max_age=?, capacity=?, reg_mode=?, sort=?, active=? WHERE id=? AND campaign_id=?').run(...vals, id, c.id)
-  else db.prepare('INSERT INTO offerings (name, description, division_id, min_age, max_age, capacity, reg_mode, sort, active, id, campaign_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...vals, uid(), c.id)
-  audit(actor, 'campaign_program_saved', c.season_id, null, { campaign: c.name, program: p.name, registration: mode })
+  const vals = [p.name.trim(), p.description ?? '', p.division_id ?? null, p.min_age ?? null, p.max_age ?? null, p.capacity ?? null, mode, p.sort ?? was?.sort ?? 0, mode === 'closed' ? 0 : 1, p.when_full ?? was?.when_full ?? 'waitlist', p.protect_at !== undefined ? p.protect_at : was?.protect_at ?? null]
+  if (id) db.prepare('UPDATE offerings SET name=?, description=?, division_id=?, min_age=?, max_age=?, capacity=?, reg_mode=?, sort=?, active=?, when_full=?, protect_at=? WHERE id=? AND campaign_id=?').run(...vals, id, c.id)
+  else db.prepare('INSERT INTO offerings (name, description, division_id, min_age, max_age, capacity, reg_mode, sort, active, when_full, protect_at, id, campaign_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...vals, uid(), c.id)
+  audit(actor, 'campaign_program_saved', c.season_id, null, { campaign: c.name, program: p.name, registration: mode, spots: p.capacity ?? null, when_full: p.when_full ?? was?.when_full ?? 'waitlist' })
   changed()
 }
 export function deleteOffering(id: string, actor: string) {
@@ -266,8 +413,11 @@ export function deleteQuestion(id: string, actor: string) {
 export interface CheckoutInput {
   guardian: { firstName: string; lastName: string; email: string; phone: string; address?: string; city?: string; state?: string; zip?: string }
   answers: Record<string, unknown>
-  players: { firstName: string; lastName: string; birthdate: string; gender?: string; offeringId: string; items: Record<string, number>; answers: Record<string, unknown>; returning?: string }[]
+  players: { firstName: string; lastName: string; birthdate: string; gender?: string; offeringId: string; items: Record<string, number>; answers: Record<string, unknown>; returning?: string; tryout?: boolean }[]
+  /** Pay in installments (when the campaign offers a plan). */ plan?: boolean
 }
+/** Where a player's tryout answer is kept among their answers (not a campaign question; built in for Minors returners). */
+export const TRYOUT_ANSWER = '_tryout'
 
 function checkAnswer(q: Question, v: unknown, who: string): unknown {
   const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length) || (q.type === 'agreement' && v !== true)
@@ -287,8 +437,9 @@ function checkAnswer(q: Question, v: unknown, who: string): unknown {
 export interface Quote {
   campaign: Campaign; season: Season
   guardian: CheckoutInput['guardian']; answers: Record<string, unknown>
-  players: { input: CheckoutInput['players'][number]; returning: string; offering: Offering; age: number | null; waitlisted: boolean; answers: Record<string, unknown>; lines: { item: Item; qty: number }[] }[]
+  players: { input: CheckoutInput['players'][number]; returning: string; offering: Offering; age: number | null; waitlisted: boolean; heldSeat: boolean; answers: Record<string, unknown>; lines: { item: Item; qty: number }[] }[]
   total: number
+  plan: { due: string; cents: number }[] | null
 }
 
 /** Validate a form submission and price it. Throws a family-readable error on anything wrong. */
@@ -345,6 +496,7 @@ export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote
     const a = availability(o)
     const used = (taken.get(o.id) ?? 0) + 1
     const waitlisted = !ownSeat && (a.full || (a.open != null && a.open - used < 0))
+    if (waitlisted && shutFor(o, a)) throw new UserError(`${o.name} is full for ${s.year} and isn’t taking more registrations — please contact the league`)
     if (!waitlisted && !ownSeat) taken.set(o.id, used)
     const lines: { item: Item; qty: number }[] = []
     for (const it of its.filter((i) => appliesTo(i.offering_ids, o.id))) {
@@ -357,10 +509,20 @@ export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote
     // A confirmed returner already told us about their baseball last season.
     const returner = !!returning && returning !== 'new'
     for (const q of qs.filter((q) => q.scope === 'player' && appliesTo(q.offering_ids, o.id) && !(q.new_only && returner))) { const v = checkAnswer(q, p.answers?.[q.id], name); if (v !== undefined) answers[q.id] = v }
-    out.push({ input: { ...p, birthdate: dob }, returning, offering: o, age, waitlisted, answers, lines })
+    // A Minors returner registering for the shared program, and every 9, says whether they're trying out for Majors.
+    if ((returner && holdsSeatIn(c, returning, o) && tryoutTeam(c, returning)) || offeringAsksTryout(o)) {
+      if (typeof p.tryout !== 'boolean') throw new UserError(`${name}: say whether they’ll try out for Majors`)
+      answers[TRYOUT_ANSWER] = p.tryout
+    }
+    out.push({ input: { ...p, birthdate: dob }, returning, offering: o, age, waitlisted, heldSeat: ownSeat, answers, lines })
   }
   const total = out.filter((p) => !p.waitlisted).reduce((a, p) => a + p.lines.reduce((b, l) => b + l.item.price_cents * l.qty, 0), 0)
-  return { campaign: c, season: s, guardian: g, answers: familyAnswers, players: out, total }
+  let plan: Quote['plan'] = null
+  if (inp.plan && total > 0) {
+    plan = planFor(c, total)
+    if (!plan) throw new UserError('A payment plan isn’t available for this registration — please pay in full, or contact the league')
+  }
+  return { campaign: c, season: s, guardian: g, answers: familyAnswers, players: out, total, plan }
 }
 
 /** Save the order and start Stripe checkout. Returns where to send the family next. */
@@ -374,11 +536,12 @@ export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl
       .run(orderId, q.campaign.id, q.total > 0 ? 'pending' : allWaitlisted ? 'waitlisted' : 'pending', JSON.stringify(q.guardian), JSON.stringify(q.answers), q.total, q.total > 0 ? stripeMode() : null)
     for (const p of q.players) {
       const pid = uid()
-      db.prepare(`INSERT INTO order_players (id, order_id, first_name, last_name, birthdate, gender, offering_id, status, answers, prior_match) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(pid, orderId, p.input.firstName.trim(), p.input.lastName.trim(), p.input.birthdate, p.input.gender ?? '', p.offering.id, p.waitlisted ? 'waitlisted' : 'pending', JSON.stringify(p.answers), p.returning)
+      db.prepare(`INSERT INTO order_players (id, order_id, first_name, last_name, birthdate, gender, offering_id, status, answers, prior_match, held_seat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(pid, orderId, p.input.firstName.trim(), p.input.lastName.trim(), p.input.birthdate, p.input.gender ?? '', p.offering.id, p.waitlisted ? 'waitlisted' : 'pending', JSON.stringify(p.answers), p.returning, p.heldSeat ? 1 : 0)
       for (const l of p.lines) db.prepare('INSERT INTO order_lines (order_id, order_player_id, item_id, name, tag, unit_cents, qty, charged) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(orderId, pid, l.item.id, l.item.name, l.item.tag, l.item.price_cents, l.qty, p.waitlisted ? 0 : 1)
     }
+    if (q.plan) createPlan(orderId, q.plan)
   })()
   const done = `${baseUrl}/register/${q.campaign.slug}/done?order=${orderId}`
   if (q.total === 0) {
@@ -389,8 +552,12 @@ export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl
   const lines: LineItem[] = q.players.filter((p) => !p.waitlisted).flatMap((p) => p.lines.map((l) => ({
     name: `${l.item.name} — ${p.input.firstName.trim()} ${p.input.lastName.trim()}`, description: p.offering.name, unitCents: l.item.price_cents, qty: l.qty,
   })))
+  const names = q.players.filter((p) => !p.waitlisted).map((p) => `${p.input.firstName.trim()} ${p.input.lastName.trim()}`).join(', ')
+  // A plan charges the first payment now and keeps the card for the rest.
+  const planLines: LineItem[] | null = q.plan ? [{ name: `Payment 1 of ${q.plan.length} — ${q.campaign.name} registration`,
+    description: `${names}. Then ${q.plan.slice(1).map((x) => `$${(x.cents / 100).toFixed(2)} on ${x.due}`).join(', ')} — charged to this card.`, unitCents: q.plan[0]!.cents, qty: 1 }] : null
   const session = await createCheckout({
-    lines, email: q.guardian.email.trim(), orderId, idempotencyKey: `order-${orderId}`,
+    lines: planLines ?? lines, saveCard: !!q.plan, email: q.guardian.email.trim(), orderId, idempotencyKey: `order-${orderId}`,
     successUrl: `${done}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: `${baseUrl}/register/${q.campaign.slug}?cancelled=${orderId}`,
     description: `${q.campaign.name} registration — ${q.players.map((p) => `${p.input.firstName} ${p.input.lastName}`).join(', ')}`,
   })
@@ -404,7 +571,16 @@ export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl
  */
 function kidFor(p: OrderPlayer): Kid {
   const confirmed = p.prior_match && p.prior_match !== 'new' ? (db.prepare('SELECT * FROM kids WHERE id = ?').get(p.prior_match) as Kid | undefined) : undefined
-  if (confirmed) { if (!confirmed.birthdate) db.prepare('UPDATE kids SET birthdate = ? WHERE id = ?').run(p.birthdate, confirmed.id); return confirmed }
+  if (confirmed) {
+    if (!confirmed.birthdate) db.prepare('UPDATE kids SET birthdate = ? WHERE id = ?').run(p.birthdate, confirmed.id)
+    else if (confirmed.birthdate !== p.birthdate) {
+      // The family said "same player" with a different birthdate: keep ours, flag it for the office to check.
+      const note = `Registration gave birthdate ${p.birthdate} (on file: ${confirmed.birthdate}) — check which is right.`
+      db.prepare(`UPDATE kids SET notes = TRIM(notes || ' ' || ?) WHERE id = ? AND instr(notes, ?) = 0`).run(note, confirmed.id, note)
+      audit('registration', 'birthdate_differs', null, confirmed.id, { given: p.birthdate, onFile: confirmed.birthdate })
+    }
+    return confirmed
+  }
   const name = `${p.first_name} ${p.last_name}`
   const cands = (db.prepare('SELECT * FROM kids WHERE name_key = ?').all(nameKey(name)) as Kid[]).filter((k) => !k.birthdate || k.birthdate === p.birthdate)
   // A family that said "not this player" only gets an exact birthdate match, never a guess.
@@ -434,6 +610,13 @@ function place(o: Order, p: OrderPlayer, c: Campaign, status: 'Registered' | 'Wa
     }
   }
   db.prepare('UPDATE order_players SET kid_id = ?, enrollment_id = ? WHERE id = ?').run(k.id, enrollmentId, p.id)
+  // Their tryout answer replaces the "assumed trying out" Minors returners and 9s start the season with.
+  const tryout = J<Record<string, unknown>>(p.answers, {})[TRYOUT_ANSWER]
+  const ed = enrollmentId ? (db.prepare('SELECT division_id FROM enrollments WHERE id = ?').get(enrollmentId) as { division_id: string | null }).division_id : null
+  const edDiv = ed ? division(ed) : undefined
+  if (enrollmentId && typeof tryout === 'boolean' && (tryoutTeam(c, k.id) || (edDiv && !edDiv.group_key && canTryOut(edDiv)))) {
+    try { setTryout(enrollmentId, tryout, 'registration') } catch (e) { if (!(e instanceof UserError)) throw e }
+  }
   // Remember the parent for next year's returning-player outreach.
   const g = J<CheckoutInput['guardian']>(o.guardian, { firstName: '', lastName: '', email: '', phone: '' })
   try { addContact(k.id, { name: `${g.firstName} ${g.lastName}`, email: g.email, phone: g.phone }, 'registration') } catch (e) { if (!(e instanceof UserError)) throw e }
@@ -457,6 +640,7 @@ export function fulfill(orderId: string, paymentId: string | null) {
       if (p.status === 'pending') { place(o, p, c, 'Registered'); db.prepare(`UPDATE order_players SET status = 'registered' WHERE id = ?`).run(p.id); did++ }
       else if (p.status === 'waitlisted' && !p.enrollment_id && !p.kid_id) { place(o, p, c, 'Waitlist'); did++ }
     }
+    if ((o as Order & { plan?: number }).plan && paymentId) firstPaymentIn(orderId, paymentId)
     if (o.status === 'pending' || o.status === 'waitlisted') {
       const paid = ps.some((p) => p.status === 'pending' || p.status === 'registered')
       db.prepare(`UPDATE orders SET status = ?, paid_at = COALESCE(paid_at, ?), stripe_payment_id = COALESCE(?, stripe_payment_id) WHERE id = ?`)
@@ -585,9 +769,16 @@ export function handleStripeEvent(ev: { type: string; data: { object: Record<str
     if (obj.payment_status !== 'paid') return 'not paid yet'
     const pi = (obj.payment_intent as string | null) ?? null
     if (meta.order_player_id) { fulfillOffer(meta.order_player_id, pi); return `waitlist spot paid ${meta.order_player_id}` }
+    if (meta.installment_ids) {
+      const n = balancePaid(meta.installment_ids.split(','), pi)
+      if (meta.order_id) saveCard(meta.order_id, pi).catch((e) => console.error('[plans] save card', e))
+      return `plan payments ${n}`
+    }
     const o = meta.order_id ? order(meta.order_id) : (db.prepare('SELECT * FROM orders WHERE stripe_session_id = ?').get(obj.id) as Order | undefined)
     if (!o) return 'unknown order'
-    return `fulfilled ${o.id}: ${fulfill(o.id, pi).did} players`
+    const res = `fulfilled ${o.id}: ${fulfill(o.id, pi).did} players`
+    if ((o as Order & { plan?: number }).plan) saveCard(o.id, pi).catch((e) => console.error('[plans] save card', e))
+    return res
   }
   if (ev.type === 'checkout.session.expired') {
     // A pay-link checkout left unfinished; the offer itself stands until its deadline.
@@ -599,8 +790,14 @@ export function handleStripeEvent(ev: { type: string; data: { object: Record<str
   if (ev.type === 'charge.refunded') {
     const pi = obj.payment_intent as string
     const full = obj.amount_refunded === obj.amount
-    const o = db.prepare('SELECT * FROM orders WHERE stripe_payment_id = ?').get(pi) as Order | undefined
+    const inst = db.prepare('SELECT order_id, seq FROM installments WHERE stripe_payment_id = ?').get(pi) as { order_id: string; seq: number } | undefined
+    const o = (db.prepare('SELECT * FROM orders WHERE stripe_payment_id = ?').get(pi) ?? (inst ? order(inst.order_id) : undefined)) as Order | undefined
     if (!o) return 'refund for an unknown payment'
+    if (inst && inst.seq > 1) {
+      db.prepare(`UPDATE orders SET admin_notes = TRIM(admin_notes || ' ' || ?) WHERE id = ?`).run(`Plan payment ${inst.seq} ${full ? 'refunded' : 'partly refunded'} in Stripe (${((obj.amount_refunded as number) / 100).toFixed(2)}).`, o.id)
+      changed()
+      return 'plan payment refund noted'
+    }
     // Refunds are flagged, not acted on: an admin decides whether the kid is withdrawn.
     db.prepare(`UPDATE orders SET status = CASE WHEN ? THEN 'refunded' ELSE status END, admin_notes = TRIM(admin_notes || ' ' || ?) WHERE id = ?`)
       .run(full ? 1 : 0, `${full ? 'Fully' : 'Partly'} refunded in Stripe (${((obj.amount_refunded as number) / 100).toFixed(2)}).`, o.id)
@@ -620,13 +817,18 @@ export async function confirmFromReturn(orderId: string, sessionId: string | nul
       const s = await getCheckout(sessionId)
       if (s.payment_status === 'paid' && (s.metadata?.order_id === o.id)) {
         if (s.metadata.order_player_id) fulfillOffer(s.metadata.order_player_id, s.payment_intent)
-        else if (o.status === 'pending') fulfill(o.id, s.payment_intent)
+        else if (s.metadata.installment_ids) { balancePaid(s.metadata.installment_ids.split(','), s.payment_intent); await saveCard(o.id, s.payment_intent).catch(() => {}) }
+        else if (o.status === 'pending') { fulfill(o.id, s.payment_intent); if ((o as Order & { plan?: number }).plan) await saveCard(o.id, s.payment_intent).catch((e) => console.error('[plans] save card', e)) }
       }
     } catch (e) { console.error('[stripe] confirm on return failed', e) }
   }
   const fresh = order(orderId)!, c = mustCampaign(fresh.campaign_id)
   return {
     status: fresh.status, campaign: c.name, confirmation: c.confirmation, total_cents: fresh.total_cents,
+    plan: (fresh as Order & { plan?: number; card_label?: string }).plan ? {
+      card: (fresh as Order & { card_label?: string }).card_label || '', pay_url: payLink(fresh.id),
+      installments: installmentsFor(fresh.id).map((i) => ({ seq: i.seq, due: i.due_date, cents: i.amount_cents, status: i.status })),
+    } : null,
     players: players(orderId).map((p) => ({
       name: `${p.first_name} ${p.last_name}`, status: offerExpired(p) ? 'expired' : p.status, program: (db.prepare('SELECT name FROM offerings WHERE id = ?').get(p.offering_id) as { name: string }).name,
       ...(p.status === 'offered' && p.offer_token && !offerExpired(p) ? { pay_url: offerLink(c, p.offer_token, config.baseUrl), pay_by: longDate(p.offer_expires_at!) } : {}),
@@ -659,7 +861,11 @@ export function adminCampaign(id: string) {
   const pos = new Map(waitlist.flatMap((w) => w.players.map((p) => [p.id, p.pos] as const)))
   return {
     campaign: c, waitlist, mail: mailConfigured(), offerHours: OFFER_HOURS, url: `${config.baseUrl}/register/${c.slug}`, stripe: stripeConfigured() ? stripeMode() : null, webhook: !!config.stripe.webhookSecret,
-    offerings: offs.map((o) => ({ ...o, ...availability(o), registered: ps.filter((p) => p.offering_id === o.id && p.status === 'registered').length, waitlisted: ps.filter((p) => p.offering_id === o.id && ['waitlisted', 'offered'].includes(p.status)).length })),
+    offerings: offs.map((o) => {
+      const mine = ps.filter((p) => p.offering_id === o.id), reg = mine.filter((p) => p.status === 'registered')
+      return { ...o, ...availability(o), registered: reg.length, new_registered: reg.filter((p) => !p.held_seat).length, returning_registered: reg.filter((p) => p.held_seat).length,
+        waitlisted: mine.filter((p) => ['waitlisted', 'offered'].includes(p.status)).length, in_checkout: mine.filter((p) => p.status === 'pending').length }
+    }),
     items: items(id).map((i) => ({ ...i, offering_ids: J<string[]>(i.offering_ids, []), sold: lines.filter((l) => l.name === i.name && l.charged).reduce((a, l) => a + l.qty, 0) })),
     questions: questions(id).map((q) => ({ ...q, options: J<string[]>(q.options, []), offering_ids: J<string[]>(q.offering_ids, []) })),
     totals: {
@@ -689,7 +895,7 @@ export function exportRows(id: string, onlyUnsynced: boolean): (string | number 
   const itemNames = a.items.map((i) => i.name)
   const fmt = (v: unknown) => (Array.isArray(v) ? v.join('; ') : v === true ? 'Yes' : v == null ? '' : String(v))
   const head = ['Order', 'Order status', 'Paid at', 'In SportsEngine', 'Player first name', 'Player last name', 'Birthdate', 'Gender', 'Program', 'Player status', 'Played last season',
-    'Parent first name', 'Parent last name', 'Email', 'Phone', 'Address', 'City', 'State', 'Zip', ...itemNames, 'Amount paid', ...fq.map((q) => q.label), ...pq.map((q) => q.label)]
+    'Parent first name', 'Parent last name', 'Email', 'Phone', 'Address', 'City', 'State', 'Zip', ...itemNames, 'Amount paid', 'Trying out for Majors', ...fq.map((q) => q.label), ...pq.map((q) => q.label)]
   const rows: (string | number | null)[][] = [head]
   for (const o of a.orders) {
     if (!['paid', 'waitlisted'].includes(o.status) || (onlyUnsynced && o.se_synced_at)) continue
@@ -701,6 +907,7 @@ export function exportRows(id: string, onlyUnsynced: boolean): (string | number 
         g.firstName, g.lastName, g.email, g.phone, g.address ?? '', g.city ?? '', g.state ?? '', g.zip ?? '',
         ...itemNames.map((n) => p.lines.filter((l) => l.name === n).reduce((s, l) => s + l.qty, 0) || ''),
         (p.lines.filter((l) => l.charged).reduce((s, l) => s + l.unit_cents * l.qty, 0) / 100).toFixed(2),
+        ans[TRYOUT_ANSWER] === true ? 'Yes' : ans[TRYOUT_ANSWER] === false ? 'No' : '',
         ...fq.map((q) => fmt(fans[q.id])), ...pq.map((q) => fmt(ans[q.id]))])
     }
   }

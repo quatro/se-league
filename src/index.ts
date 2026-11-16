@@ -3,6 +3,7 @@ import path from 'node:path'
 import { config, isProd, ROOT } from './config.js'
 import './db.js'
 import { loadAuth } from './lib/auth.js'
+import { runPlans } from './lib/plans.js'
 import { api } from './routes/api.js'
 import { register, stripeWebhook } from './routes/register.js'
 import { webhookRouter } from './routes/webhooks.js'
@@ -35,6 +36,8 @@ app.get(['/', '/admin'], (req, res, next) => (config.draftHosts[req.hostname] ? 
 app.get(['/draft/:season/:key', '/draft/:season/:key/admin'], page('draft.html'))
 app.get(['/admin', '/kids/:id'], page('index.html'))
 app.get(['/register/:slug', '/register/:slug/done'], page('register.html'))
+app.get('/signin', page('signin.html'))
+app.get('/interest/:token', page('interest.html'))
 app.use(express.static(path.join(ROOT, 'public'), { maxAge: 0, extensions: ['html'] }))
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -43,3 +46,8 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 })
 
 app.listen(config.port, '127.0.0.1', () => console.log(`${config.leagueName} league app on http://127.0.0.1:${config.port}`))
+
+// Payment plans: charge what's due and send the "coming up" reminders. Every 15 minutes, first run a minute after start.
+const planTick = () => runPlans().catch((e) => console.error('[plans]', e))
+setTimeout(planTick, 60_000)
+setInterval(planTick, 15 * 60_000)

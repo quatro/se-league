@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { config } from '../config.js'
 import { db } from '../db.js'
 import { ageBreakdown } from '../lib/ages.js'
-import { clearFailures, grantViewer, login, logout, noteFailure, requireAdmin, requireViewer, throttled } from '../lib/auth.js'
+import { clearFailures, login, logout, noteFailure, requireAdmin, requireUser, throttled } from '../lib/auth.js'
+import * as U from '../lib/users.js'
 import * as D from '../lib/drafts.js'
 import * as L from '../lib/league.js'
 import { contactsFor, deleteContact, importContacts, saveContact } from '../lib/contacts.js'
@@ -39,8 +40,27 @@ function sendCsv(res: Response, name: string, rows: Cell[][]) {
 
 // ---------- session ----------
 api.get('/api/me', (req, res) => {
-  res.json({ admin: req.admin?.username ?? null, viewer: !!req.viewer, viewerCodeRequired: !!config.viewerPassword })
+  const u = req.user
+  res.json({ user: u ? { email: u.email, name: u.name, role: u.role } : null, admin: req.admin?.username ?? null })
 })
+// Always answers the same way, so the form can't be used to learn who is on the list.
+api.post('/api/auth/link', wrap(async (req) => {
+  const b = z.object({ email: z.string().max(200), next: z.string().max(300).optional() }).parse(req.body)
+  const email = b.email.trim().toLowerCase()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new L.UserError('Enter your email address')
+  const key = `link:${req.ip}`, perEmail = `link:${email}`
+  if (throttled(key) || throttled(perEmail)) throw new L.UserError('Too many requests. Try again in 15 minutes.')
+  noteFailure(key); noteFailure(perEmail) // every request counts toward the limit, found or not
+  await U.sendLoginLink(email, U.originFor(req), b.next)
+  return { ok: true }
+}))
+api.post('/api/auth/verify', wrap((req, res) => {
+  const { token } = z.object({ token: z.string().min(10).max(200) }).parse(req.body)
+  const next = U.redeem(res, token)
+  if (!next) return res.status(400).json({ error: 'This sign-in link has expired or was already used. Request a new one.' })
+  return { ok: true, next }
+}))
+// Break-glass password login for the original admin account.
 api.post('/api/login', wrap((req, res) => {
   const { username, password } = z.object({ username: z.string().min(1), password: z.string().min(1) }).parse(req.body)
   const key = `login:${req.ip}`
@@ -49,16 +69,9 @@ api.post('/api/login', wrap((req, res) => {
   clearFailures(key)
 }))
 api.post('/api/logout', wrap((req, res) => { logout(req, res) }))
-api.post('/api/viewer', wrap((req, res) => {
-  const { code } = z.object({ code: z.string() }).parse(req.body)
-  const key = `viewer:${req.ip}`
-  if (throttled(key)) return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' })
-  if (!config.viewerPassword || code.trim() !== config.viewerPassword) { noteFailure(key); return res.status(401).json({ error: 'That code isn’t right' }) }
-  clearFailures(key)
-  grantViewer(res)
-}))
 
 // ---------- public ----------
+// Only enough for the sign-in page to know where it is. Everything else below needs a signed-in user.
 /** Where this hostname should land: a specific draft room, or the league home on the current season. */
 api.get('/api/home', (req, res) => {
   const route = config.draftHosts[req.hostname]
@@ -68,11 +81,11 @@ api.get('/api/home', (req, res) => {
   res.json({ league: config.leagueName, leagueUrl: config.draftHosts[req.hostname] ? config.leagueUrl : '', current: cur?.id ?? null, draft })
 })
 
-api.get('/api/seasons/:id/state', requireViewer, wrap((req) => L.seasonState(p(req, 'id'), !!req.admin)))
-api.get('/api/seasons/:id/ages', requireViewer, wrap((req) => ageBreakdown(p(req, 'id'))))
-api.get('/api/drafts/:id/state', requireViewer, wrap((req) => D.draftState(p(req, 'id'), !!req.admin)))
+api.get('/api/seasons/:id/state', requireUser, wrap((req) => L.seasonState(p(req, 'id'), !!req.admin)))
+api.get('/api/seasons/:id/ages', requireUser, wrap((req) => ageBreakdown(p(req, 'id'))))
+api.get('/api/drafts/:id/state', requireUser, wrap((req) => D.draftState(p(req, 'id'), !!req.admin)))
 
-api.get('/api/stream', requireViewer, (req, res) => {
+api.get('/api/stream', requireUser, (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
   res.flushHeaders()
   const send = (v: number) => res.write(`event: change\ndata: ${v}\n\n`)
@@ -82,7 +95,7 @@ api.get('/api/stream', requireViewer, (req, res) => {
   req.on('close', () => { clearInterval(ping); L.bus.off('change', send) })
 })
 
-api.get('/api/seasons/:id/capacity.csv', requireViewer, wrap((req, res) => {
+api.get('/api/seasons/:id/capacity.csv', requireUser, wrap((req, res) => {
   const st = L.seasonState(p(req, 'id'), false)
   sendCsv(res, `${st.season.year}-registration-capacity.csv`, [
     ['Division', 'Teams', 'Roster size', 'Seats', 'Registered', 'Returners registered', 'New registered', 'Returners expected', 'Returners need contact', 'Open seats', 'Waitlist', 'Status'],
@@ -93,7 +106,7 @@ api.get('/api/seasons/:id/capacity.csv', requireViewer, wrap((req, res) => {
   ])
 }))
 
-api.get('/api/drafts/:id/rosters.csv', requireViewer, wrap((req, res) => {
+api.get('/api/drafts/:id/rosters.csv', requireUser, wrap((req, res) => {
   const st = D.draftState(p(req, 'id'), false)
   const byId = new Map(st.players.map((x) => [x.id, x]))
   const rows: Cell[][] = [['Team', 'Player', 'Age', 'How', 'Round', 'Pick']]
@@ -173,6 +186,10 @@ admin.post('/drafts/:id/pick', wrap((req) => {
   const b = z.object({ playerId: z.string().optional(), number: z.number().int().optional(), slot: z.string().optional() }).parse(req.body)
   return D.makePick(p(req, 'id'), b.playerId ?? null, actor(req), { slot: b.slot, number: b.number })
 }))
+admin.post('/drafts/:id/sibling', wrap((req) => {
+  const b = z.object({ playerId: z.string(), teamId: z.string(), round: z.number().int().min(1).max(40) }).parse(req.body)
+  return D.siblingPick(p(req, 'id'), b.playerId, b.teamId, b.round, actor(req))
+}))
 admin.post('/drafts/:id/undo', wrap((req) => { D.undoLast(p(req, 'id'), actor(req)) }))
 admin.post('/drafts/:id/clock/start', wrap((req) => { D.startClock(p(req, 'id'), actor(req)) }))
 admin.post('/drafts/:id/picks/clear', wrap((req) => { z.object({ confirm: z.literal('CLEAR') }).parse(req.body); D.clearPicks(p(req, 'id'), actor(req)) }))
@@ -220,9 +237,10 @@ admin.post('/contacts/import', wrap((req) => importContacts(z.object({ text: z.s
 
 // outreach: emailing returning families to register early
 const outreachBody = z.object({ seasonId: z.string(), campaignId: z.string(), subject: z.string().max(300), body: z.string().max(10_000),
-  divisionIds: z.array(z.string()).max(50).default([]), statuses: z.array(z.enum(STATUSES)).max(10).default([]) })
+  divisionIds: z.array(z.string()).max(50).default([]), statuses: z.array(z.enum(STATUSES)).max(10).default([]), kind: z.enum(['register', 'interest']).default('register') })
 admin.get('/outreach', wrap((req) => ({
   list: O.listOutreach(String(req.query.season ?? '')), defaults: { subject: O.DEFAULT_SUBJECT, body: O.DEFAULT_BODY },
+  interest: { subject: O.INTEREST_SUBJECT, body: O.INTEREST_BODY },
 })))
 admin.post('/outreach/preview', wrap((req) => O.preview(outreachBody.parse(req.body))))
 admin.post('/outreach/test', wrap((req) => {
@@ -295,6 +313,25 @@ admin.post('/registrations/manual', wrap((req) => {
   const payload = { participant: { first_name: b.firstName, last_name: b.lastName, date_of_birth: b.birthdate }, program: b.program, season: b.season ?? L.currentSeason()?.id }
   const { id } = storeRegistration('manual', JSON.stringify(payload), payload, true)
   return processRegistration(id, actor(req))
+}))
+
+// people allowed to sign in
+const userBody = z.object({ email: z.string().max(200), name: z.string().max(120).optional(), role: z.enum(['user', 'admin']) })
+admin.get('/users', wrap(() => ({ users: U.listUsers(), mail: U.mailOn() })))
+admin.post('/users', wrap(async (req) => {
+  const b = userBody.extend({ invite: z.boolean().optional() }).parse(req.body)
+  const u = U.addUser(b, actor(req))
+  if (b.invite) { await U.sendLoginLink(u.email, U.originFor(req), '/'); return { ok: true, message: `Added ${u.email} and emailed a sign-in link` } }
+  return { ok: true, message: `Added ${u.email}` }
+}))
+admin.patch('/users/:id', wrap((req) => { U.updateUser(Number(p(req, 'id')), userBody.partial().parse(req.body), req, actor(req)) }))
+admin.delete('/users/:id', wrap((req) => { U.removeUser(Number(p(req, 'id')), req, actor(req)) }))
+// For when email isn't set up (or a message went to spam): the admin hands the link over themselves.
+admin.post('/users/:id/link', wrap((req) => ({ url: U.linkFor(Number(p(req, 'id')), U.originFor(req)) })))
+admin.post('/users/:id/email-link', wrap(async (req) => {
+  const u = U.userById(Number(p(req, 'id'))); if (!u) throw new L.UserError('Unknown user')
+  await U.sendLoginLink(u.email, U.originFor(req), '/', true)
+  return { ok: true, message: `Sign-in link emailed to ${u.email}` }
 }))
 
 admin.get('/audit', wrap((req) => {

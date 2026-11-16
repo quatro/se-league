@@ -41,8 +41,9 @@
       <div class="hd"><h2 id="poolTitle">Available</h2><span class="chip" id="poolCount">0</span></div>
       <div class="pool-tools" id="poolTools">
         <input type="search" id="poolSearch" placeholder="Search players" aria-label="Search players">
-        <div class="row" style="flex-wrap:nowrap">
+        <div class="row" style="flex-wrap:wrap">
           <select id="poolAge" aria-label="Filter by age"><option value="">All ages</option></select>
+          <select id="poolFrom" aria-label="Filter by where they come from" hidden></select>
           <label class="row" style="min-width:0;font-weight:500;gap:4px;white-space:nowrap"><input type="checkbox" id="showTaken"> Show drafted</label>
         </div>
       </div>
@@ -75,6 +76,14 @@
     <div class="panel" id="numbersPanel" hidden><div class="hd"><h2>Hidden numbers</h2></div><div class="bd">
       <p class="note" id="numbersNote"></p>
       <div class="row"><button class="btn primary" id="assignNumbers">Hand out numbers</button><button class="btn" id="clearNumbers">Reshuffle all</button></div>
+    </div></div>
+
+    <div class="panel" id="siblingPanel"><div class="hd"><h2>Sibling picks</h2></div><div class="bd">
+      <p class="note">Put a player on a team (usually a sibling's) in a chosen round, before or during the draft. The draft skips that pick when it gets there, and undo and “Clear all picks” leave it alone. Click it on the board to change or remove it.</p>
+      <div class="row"><select id="sibPlayer" aria-label="Player" style="min-width:12em"></select><select id="sibTeam" aria-label="Team" style="width:auto"></select>
+        <label class="row" style="gap:4px;min-width:0">Round <input type="number" id="sibRound" min="1" max="40" value="3" style="width:4.5em" aria-label="Round"></label>
+        <button class="btn primary" id="sibAdd">Add sibling pick</button></div>
+      <ul class="note" id="sibList" style="margin:0;padding-left:1.2em"></ul>
     </div></div>
 
     <div class="panel"><div class="hd"><h2>Draft controls</h2></div><div class="bd">

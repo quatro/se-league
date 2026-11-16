@@ -34,22 +34,28 @@
       </div>
     </section>
 
-    <div id="players"></div>
-    <p><button type="button" class="linkbtn" id="addPlayer">+ Register another player</button></p>
+    <section class="playerswrap">
+      <h2 class="secttl">Players</h2>
+      <div id="players"></div>
+      <button type="button" class="addplayer" id="addPlayer">+ Add another player</button>
+    </section>
 
     <section class="regsec" id="familySec" hidden>
       <h2>Your family</h2>
       <div id="familyQs" class="qs"></div>
     </section>
 
-    <section class="regsec summary">
-      <h2>Summary</h2>
+    <section class="regsec summary" aria-label="Summary">
+      <h2>Your registration <span class="sub" id="sumCount"></span></h2>
       <div id="summary"></div>
+      <fieldset class="choice payplan" id="payChoice" hidden></fieldset>
       <p class="err-text" id="err" role="alert"></p>
       <button type="submit" class="btn primary big" id="submit">Continue to payment</button>
       <p class="note" id="payNote">You'll pay securely on Stripe's checkout page. Nothing is charged until you finish there.</p>
     </section>
   </form>
+  <!-- Phones: what's in the registration so far, always in reach -->
+  <div class="regbar" id="regbar"><div class="regbar-text" id="regbarText"></div><b class="regbar-total" id="regbarTotal"></b><button type="button" class="btn primary" id="regbarGo">Review</button></div>
 
   <!-- DONE -->
   <section id="done" hidden></section>

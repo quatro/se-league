@@ -4,6 +4,8 @@ import { config } from '../config.js'
 import { requireAdmin, throttled, noteFailure } from '../lib/auth.js'
 import * as C from '../lib/campaigns.js'
 import * as O from '../lib/outreach.js'
+import * as P from '../lib/plans.js'
+import { revenue } from '../lib/finance.js'
 import { UserError } from '../lib/league.js'
 import { verifyStripeSignature } from '../lib/stripe.js'
 
@@ -48,16 +50,44 @@ register.get('/api/register/:slug', wrap((req) => C.publicCampaign(p(req, 'slug'
 
 // "Did this player play last year?" Runs as families type, so it has its own, looser limit.
 const lookups = new Map<string, { n: number; until: number }>()
-register.get('/api/register/:slug/returning', wrap((req, res) => {
+function tooManyLookups(req: Request): boolean {
   const now = Date.now(), a = lookups.get(req.ip ?? '')
   const fresh = !a || a.until < now
   lookups.set(req.ip ?? '', { n: fresh ? 1 : a!.n + 1, until: fresh ? now + 15 * 60e3 : a!.until })
-  if (!fresh && a!.n >= 120) return res.status(429).json({ error: 'Too many lookups — please wait a few minutes.' })
   if (lookups.size > 5000) for (const [k, v] of lookups) if (v.until < now) lookups.delete(k)
+  return !fresh && a!.n >= 120
+}
+const openCampaign = (req: Request) => {
   const c = C.campaignBySlug(p(req, 'slug'))
   if (!c || (c.status === 'draft' && !req.admin)) throw new UserError('No registration here')
+  return c
+}
+register.get('/api/register/:slug/returning', wrap((req, res) => {
+  if (tooManyLookups(req)) return res.status(429).json({ error: 'Too many lookups — please wait a few minutes.' })
+  const c = openCampaign(req)
   const q = (k: string) => String(req.query[k] ?? '').slice(0, 80)
   return { matches: C.returningMatches(c, q('first'), q('last'), q('dob')) }
+}))
+
+// Brothers and sisters of a returning player, when the parent's email or phone is on file for them.
+// A POST so the parent's email and phone stay out of URLs and logs.
+const siblingsBody = z.object({ first: z.string().max(80), last: z.string().max(80), dob: z.string().max(20), email: z.string().max(200).default(''), phone: z.string().max(40).default('') })
+register.post('/api/register/:slug/siblings', wrap((req, res) => {
+  if (tooManyLookups(req)) return res.status(429).json({ error: 'Too many lookups — please wait a few minutes.' })
+  const c = openCampaign(req)
+  const b = siblingsBody.parse(req.body)
+  return { siblings: C.siblingMatches(c, b.first, b.last, b.dob, b.email, b.phone) }
+}))
+
+// Interest check: a family answering "is your player coming back?" from their email. Public; the token is the key.
+register.get('/api/interest/:token', wrap((req) => O.interestPage(p(req, 'token').slice(0, 64))))
+register.post('/api/interest/:token', wrap((req, res) => {
+  const key = `interest:${req.ip}`
+  if (throttled(key)) { res.status(429).json({ error: 'Too many attempts — please wait a few minutes and try again.' }); return }
+  if (!req.is('application/json')) { res.status(415).json({ error: 'json_required' }); return }
+  noteFailure(key)
+  const b = z.object({ answers: z.array(z.object({ kidId: z.string().max(40), intent: z.enum(['yes', 'no', 'unsure']) })).min(1).max(12) }).parse(req.body)
+  return O.answerInterest(p(req, 'token').slice(0, 64), b.answers)
 }))
 
 // A personal link from an outreach email: pre-fill the form for that family.
@@ -77,8 +107,9 @@ const checkoutBody = z.object({
   players: z.array(z.object({
     firstName: z.string().max(80), lastName: z.string().max(80), birthdate: z.string().max(20), gender: z.string().max(20).optional(),
     offeringId: z.string().max(40), items: z.record(z.string(), z.number().int().min(0).max(99)).default({}), answers: z.record(z.string(), answer).default({}),
-    returning: z.string().max(40).optional(),
+    returning: z.string().max(40).optional(), tryout: z.boolean().optional(),
   })).max(8),
+  plan: z.boolean().optional(),
 })
 register.post('/api/register/:slug/checkout', wrap(async (req, res) => {
   const key = `checkout:${req.ip}`
@@ -100,6 +131,18 @@ register.get('/register/:slug/spot/:token', async (req, res, next) => {
 <section class="regsec"><p>${esc(e.message)}</p></section></main></body></html>`)
   }
 })
+// A payment-plan family's link: pay what's due (and save a new card), or a plain page saying why not.
+register.get('/register/:slug/balance/:token', async (req, res, next) => {
+  try {
+    res.redirect(303, await P.startBalanceCheckout(p(req, 'slug'), p(req, 'token').slice(0, 64)))
+  } catch (e) {
+    if (!(e instanceof UserError)) return next(e)
+    const esc = (x: string) => x.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!))
+    res.status(200).type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Registration payment</title>
+<link rel="stylesheet" href="/css/app.css"></head><body><main class="reg"><header class="top"><h1><small>${esc(config.leagueName)}</small><span>Registration payment</span></h1></header>
+<section class="regsec"><p>${esc(e.message)}</p></section></main></body></html>`)
+  }
+})
 register.get('/api/register/order/:id', wrap((req) => C.confirmFromReturn(p(req, 'id'), req.query.session_id ? String(req.query.session_id) : null)))
 
 // ---------- admin ----------
@@ -112,6 +155,8 @@ const campaignBody = z.object({
   name: z.string().min(1).max(80), slug: z.string().max(60).optional(), season_id: z.union([z.string(), z.null()]).optional(),
   status: z.enum(['draft', 'open', 'closed']).optional(), opens_at: z.union([z.string().max(40), z.null()]).optional(), closes_at: z.union([z.string().max(40), z.null()]).optional(),
   intro: z.string().max(10000).optional(), confirmation: z.string().max(10000).optional(),
+  kind: z.enum(['spring', 'standard']).optional(),
+  plan_installments: z.number().int().min(0).max(12).optional(), plan_final_date: z.union([z.string().max(10), z.null()]).optional(), plan_min_cents: z.number().int().min(0).max(10_000_000).optional(),
 })
 admin.post('/', wrap((req) => {
   const c = C.saveCampaign(null, campaignBody.parse(req.body), actor(req))
@@ -126,7 +171,7 @@ admin.post('/:id/programs-from-season', wrap((req) => { const n = C.programsFrom
 const ids = z.array(z.string().max(40)).max(50).optional()
 const offeringBody = z.object({ name: z.string().min(1).max(80), description: z.string().max(2000).optional(), division_id: z.union([z.string(), z.null()]).optional(),
   min_age: z.union([z.number().int().min(0).max(99), z.null()]).optional(), max_age: z.union([z.number().int().min(0).max(99), z.null()]).optional(),
-  capacity: z.union([z.number().int().min(0).max(10000), z.null()]).optional(), reg_mode: z.enum(['open', 'waitlist', 'closed']).optional(), sort: z.number().int().optional() })
+  capacity: z.union([z.number().int().min(0).max(10000), z.null()]).optional(), reg_mode: z.enum(['open', 'waitlist', 'closed']).optional(), when_full: z.enum(['waitlist', 'close']).optional(), protect_at: z.union([z.number().int().min(0).max(500), z.null()]).optional(), sort: z.number().int().optional() })
 admin.post('/:id/programs', wrap((req) => { C.saveOffering(p(req, 'id'), null, offeringBody.parse(req.body), actor(req)) }))
 admin.patch('/:id/programs/:oid', wrap((req) => { C.saveOffering(p(req, 'id'), p(req, 'oid'), offeringBody.parse(req.body), actor(req)) }))
 admin.delete('/:id/programs/:oid', wrap((req) => { C.deleteOffering(p(req, 'oid'), actor(req)) }))
@@ -163,3 +208,41 @@ admin.get('/:id/export.csv', wrap((req, res) => {
   res.set('Content-Disposition', `attachment; filename="${c.slug}-registrations${req.query.unsynced === '1' ? '-not-in-sportsengine' : ''}.csv"`)
   res.send(rows.map((r) => r.map((v) => (/[",\n]/.test(String(v ?? '')) ? `"${String(v).replace(/"/g, '""')}"` : String(v ?? ''))).join(',')).join('\n'))
 }))
+
+// ---------- finance: revenue and payment-plan receivables ----------
+const fin = Router()
+fin.use(requireAdmin)
+register.use('/api/admin/finance', fin)
+const campaignQ = (req: Request) => (req.query.campaign ? String(req.query.campaign).slice(0, 40) : null)
+fin.get('/', wrap((req) => revenue(campaignQ(req))))
+fin.get('/payments.csv', wrap((req, res) => {
+  const rows = P.receivablesCsv(campaignQ(req))
+  const cell = (v: string | number) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
+  res.type('text/csv').attachment('plan-payments.csv').send(rows.map((r) => r.map(cell).join(',')).join('\n'))
+}))
+fin.get('/orders/:id', wrap((req) => {
+  const id = p(req, 'id')
+  const plan = P.receivables().plans.find((x) => x.order_id === id)
+  if (!plan) throw new UserError('Unknown payment plan')
+  return { plan, log: P.contactLog(id), text: P.textFor(id), payUrl: P.payLink(id), mergeFields: P.MERGE_FIELDS }
+}))
+fin.post('/orders/:id/remind', wrap(async (req) => P.remindFamily(p(req, 'id'), actor(req))))
+fin.post('/orders/:id/email', wrap(async (req) => {
+  const b = z.object({ subject: z.string().max(200), body: z.string().max(10000) }).parse(req.body)
+  return P.sendCustomEmail(p(req, 'id'), b.subject, b.body, actor(req))
+}))
+fin.post('/orders/:id/text-preview', wrap((req) => P.textFor(p(req, 'id'), z.object({ template: z.string().max(1000).optional() }).parse(req.body).template)))
+// The admin texted (or called) from their own phone: keep it in the collections history.
+fin.post('/orders/:id/log', wrap((req) => {
+  const b = z.object({ channel: z.enum(['text', 'call', 'note', 'email']), body: z.string().max(4000) }).parse(req.body)
+  P.logContact(p(req, 'id'), b.channel, 'manual', actor(req), { subject: b.channel === 'text' ? 'Text sent' : b.channel === 'call' ? 'Phone call' : b.channel === 'email' ? 'Email (sent outside the app)' : 'Note', body: b.body })
+  return { ok: true }
+}))
+fin.post('/installments/:id/charge', wrap(async (req) => P.chargeInstallment(p(req, 'id'), actor(req))))
+fin.post('/installments/:id/record', wrap((req) => {
+  const b = z.object({ method: z.enum(['cash', 'check', 'venmo', 'other']), note: z.string().max(500).default('') }).parse(req.body)
+  P.recordPayment(p(req, 'id'), b.method, b.note, actor(req)); return { ok: true }
+}))
+fin.post('/installments/:id/waive', wrap((req) => { P.waiveInstallment(p(req, 'id'), z.object({ note: z.string().max(500).default('') }).parse(req.body).note, actor(req)); return { ok: true } }))
+fin.post('/installments/:id/move', wrap((req) => { P.moveDueDate(p(req, 'id'), z.object({ due: z.string().max(10) }).parse(req.body).due, actor(req)); return { ok: true } }))
+fin.post('/run', wrap(async () => P.runPlans()))

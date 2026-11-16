@@ -1,6 +1,6 @@
 import { db } from '../db.js'
 import {
-  ageIn, audit, changed, divisionForAge, divisions, divisionTeams, drafts, isDraftOnly, mustSeason, placements, refreshPools,
+  ageIn, audit, canTryOut, changed, divisionForAge, divisions, divisionTeams, drafts, isDraftOnly, mustSeason, placements, refreshPools,
   season, setSetting, UserError, type Division, type Placement, type Season, type Team,
 } from './league.js'
 import { uid } from './text.js'
@@ -13,7 +13,8 @@ import { uid } from './text.js'
 // an "Expected" spot in the new season:
 //
 //   - still young enough for a keep-teams division (Majors, Minors, Rookie, T-Ball):
-//     back on the same team as a returner
+//     back on the same team as a returner. Minors returners and rising 9s are assumed to
+//     be trying out for Majors (a team held, not kept) until they register and answer.
 //   - otherwise: the division their new league age fits, with no team, so they
 //     go into that division's draft (T-Ball → Rookie, 9s → Majors/Minors pool)
 //   - too old for every division: graduated, not carried forward
@@ -147,7 +148,11 @@ function carry(from: Season, toId: string, rows: ReturnType<typeof plan>['rows']
     const prior = [fromNames.get(r.p.eff_division_id!), r.p.eff_team_id ? teamNames.get(r.p.eff_team_id) : null].filter(Boolean).join(' · ') + ` (${from.year})`
     // Kids arriving in a shared group without a team (9s turning 10) go through its drafts from the top, like new registrants.
     // Moved up early (Wee Ball → T-Ball at 4): pinned so it reads as an exception, and at risk because most don't come back.
-    ins.run(uid(), toId, r.p.kid_id, div.id, tid, tid, r.age, r.early ? 'Need to contact' : 'Expected', prior, !tid && div.group_key ? 1 : 0, r.early ? 1 : 0,
+    // Kids who can try out for the group's first draft (Minors returners, rising 9s) are assumed to until they register and
+    // answer; registering "no" puts a Minors returner back on their team (returning_team_id keeps it).
+    const assumeTryout = canTryOut(div)
+    ins.run(uid(), toId, r.p.kid_id, div.id, assumeTryout && div.group_key ? null : tid, tid, r.age, r.early ? 'Need to contact' : 'Expected', prior,
+      (div.group_key && !tid) || assumeTryout ? 1 : 0, r.early ? 1 : 0,
       r.early ? `Played ${fromNames.get(r.p.eff_division_id!)} in ${from.year}; no repeat year, so moved up to ${div.name}. Likely to drop out — confirm with the family.` : '')
     n++
   }

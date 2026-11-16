@@ -15,7 +15,6 @@ export const config = {
   authDbPath: env.AUTH_DB_PATH || path.join(path.dirname(env.DB_PATH || path.join(ROOT, 'data', 'x.db')), 'auth.db'),
   // e.g. .crushworldseries.com, so logging into one league tool logs into all of them.
   cookieDomain: env.COOKIE_DOMAIN || '',
-  viewerPassword: env.VIEWER_PASSWORD || '',
   leagueName: env.LEAGUE_NAME || 'SE Baseball',
   // For dates families read (a waitlist offer's pay-by deadline). The league is in Lexington, KY.
   timeZone: env.LEAGUE_TIME_ZONE || 'America/New_York',

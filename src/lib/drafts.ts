@@ -1,7 +1,7 @@
 import { db } from '../db.js'
 import { slots, type EngineInput } from './engine.js'
 import {
-  ageIn, audit, changed, currentVersion, division, divisionTeams, draftFor, enrollment, mustSeason, refreshPools, season,
+  ageIn, audit, changed, currentVersion, division, divisionTeams, draftFor, enrollment, mustSeason, refreshPools, season, team,
   UserError, type Draft, type Placement,
 } from './league.js'
 
@@ -30,7 +30,7 @@ export function mustDraft(id: string): Draft {
 }
 const prevDraft = (r: Draft) => db.prepare('SELECT * FROM drafts WHERE next_id = ?').get(r.id) as Draft | undefined
 
-interface PickRow { draft_id: string; slot_key: string; n: number; round: number; team_id: string; enrollment_id: string; at: number; took_ms: number | null; actor: string | null }
+interface PickRow { draft_id: string; slot_key: string; n: number; round: number; team_id: string; enrollment_id: string; at: number; took_ms: number | null; actor: string | null; sibling: number }
 const picksOf = (draftId: string) => db.prepare('SELECT * FROM picks WHERE draft_id = ? ORDER BY n').all(draftId) as PickRow[]
 
 function board(r: Draft) {
@@ -83,13 +83,19 @@ export function draftState(id: string, isAdmin: boolean) {
       const hide = r.format === 'blind' && kind === 'pool' && !pickedIds.has(p.id)
       return {
         id: p.id, kind, teamId: kind === 'returning' ? p.team_id : null, number: numbers.get(p.id) ?? null,
+        // A returner trying out from another division's team (a Minors returner): the team they gave up, and
+        // whether that's their answer or only assumed because they haven't registered yet.
+        ...(kind === 'pool' && p.tryout && p.returning_team_id ? (() => {
+          const t = team(p.returning_team_id)
+          return t && t.division_id !== b.d.id ? { from: { division: division(t.division_id)?.name ?? '', team: t.name, assumed: p.status !== 'Registered' } } : {}
+        })() : {}),
         ...(hide ? { name: null, age: null, status: null, rank: null, hidden: true } : {
           name: k?.name ?? '?', age: ageIn(s, k?.birthdate ?? null, p.age), status: p.status, rank: p.rank, tryout: !!p.tryout, prior: p.prior,
           ...(isAdmin ? { notes: p.notes } : {}),
         }),
       }
     }),
-    picks: b.pk.map((p) => ({ key: p.slot_key, n: p.n, round: p.round, team: p.team_id, player: p.enrollment_id, at: p.at, took: p.took_ms })),
+    picks: b.pk.map((p) => ({ key: p.slot_key, n: p.n, round: p.round, team: p.team_id, player: p.enrollment_id, at: p.at, took: p.took_ms, sibling: !!p.sibling })),
     slots: b.sl.list, open: b.sl.open, maxRound: b.sl.max, minRound: b.sl.min,
     current: b.current, orphans: b.orphans.map((p) => p.slot_key),
     unnumbered: r.format === 'blind' ? pool.filter((p) => !numbers.has(p.id) && !OUT.includes(p.status)).length : 0,
@@ -134,19 +140,52 @@ export function makePick(draftId: string, enrollmentId: string | null, actor: st
   return res
 }
 
+/**
+ * A sibling pick: the kid goes to a team (usually a sibling's) in a chosen round,
+ * set before or during the draft. It fills that team's slot in that round, so
+ * the draft skips it when it gets there, and it doesn't touch the clock.
+ */
+export function siblingPick(draftId: string, enrollmentId: string, teamId: string, round: number, actor: string) {
+  const res = db.transaction(() => {
+    const r = mustDraft(draftId)
+    if (r.status === 'closed') throw new UserError('This draft is closed')
+    if (r.format === 'blind') throw new UserError('Sibling picks are for drafts by name')
+    const b = board(r)
+    const t = b.ts.find((x) => x.id === teamId)
+    if (!t) throw new UserError('Pick a team in this draft')
+    const e = enrollment(enrollmentId)
+    if (!e) throw new UserError('Unknown player')
+    const name = (db.prepare('SELECT name FROM kids WHERE id = ?').get(e.kid_id) as { name: string }).name
+    if (e.draft_id !== r.id) throw new UserError(`${name} isn't in this draft's pool`)
+    if (OUT.includes(e.status)) throw new UserError(`${name} is marked ${e.status}`)
+    if (db.prepare('SELECT 1 FROM picks WHERE enrollment_id = ?').get(e.id)) throw new UserError(`${name} has already been drafted`)
+    const slot = b.sl.list.find((x) => x.team === teamId && x.round === round)
+    if (!slot) throw new UserError(`${t.name} have ${b.sl.open[teamId] ?? 0} picks — there's no round ${round} pick`)
+    if (b.pk.some((p) => p.slot_key === slot.key)) throw new UserError(`${t.name}' round ${round} pick is already made`)
+    db.prepare('INSERT INTO picks (draft_id, slot_key, n, round, team_id, enrollment_id, at, took_ms, actor, sibling) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 1)')
+      .run(r.id, slot.key, slot.n, slot.round, slot.team, e.id, Date.now(), actor)
+    audit(actor, 'sibling_pick', r.season_id, e.kid_id, { draft: b.d.name, team: t.name, round, pick: slot.n })
+    return { message: `${name} is the ${t.name}' round ${round} pick (sibling pick)` }
+  })()
+  refreshPools(mustDraft(draftId).season_id)
+  changed()
+  return res
+}
+
 export function removePick(draftId: string, slotKey: string, actor: string) {
   const r = mustDraft(draftId)
   if (r.status === 'closed') throw new UserError('Reopen the draft to change picks')
   const p = db.prepare('SELECT * FROM picks WHERE draft_id = ? AND slot_key = ?').get(draftId, slotKey) as PickRow | undefined
   if (!p) throw new UserError('No pick in that slot')
   db.prepare('DELETE FROM picks WHERE draft_id = ? AND slot_key = ?').run(draftId, slotKey)
-  touch(r, { clock_start: Date.now() })
+  if (!p.sibling) touch(r, { clock_start: Date.now() }) // a sibling pick never ran the clock
   audit(actor, 'pick_removed', r.season_id, enrollment(p.enrollment_id)?.kid_id ?? null, { draft: r.key, slot: slotKey, n: p.n })
   refreshPools(r.season_id)
   changed()
 }
 export function undoLast(draftId: string, actor: string) {
-  const last = db.prepare('SELECT * FROM picks WHERE draft_id = ? ORDER BY at DESC LIMIT 1').get(draftId) as PickRow | undefined
+  // Sibling picks are set up ahead; undo only walks back picks made at the table.
+  const last = db.prepare('SELECT * FROM picks WHERE draft_id = ? AND sibling = 0 ORDER BY at DESC LIMIT 1').get(draftId) as PickRow | undefined
   if (!last) throw new UserError('No picks to undo')
   removePick(draftId, last.slot_key, actor)
 }
@@ -168,7 +207,8 @@ export function replacePick(draftId: string, slotKey: string, enrollmentId: stri
 export function clearPicks(draftId: string, actor: string) {
   const r = mustDraft(draftId)
   if (r.status === 'closed') throw new UserError('Reopen the draft first')
-  const n = db.prepare('DELETE FROM picks WHERE draft_id = ?').run(draftId).changes
+  // Sibling picks stay: they're arranged before the draft, not part of what's being redone.
+  const n = db.prepare('DELETE FROM picks WHERE draft_id = ? AND sibling = 0').run(draftId).changes
   touch(r, { clock_start: null, started_at: null })
   audit(actor, 'picks_cleared', r.season_id, null, { draft: r.key, count: n })
   refreshPools(r.season_id)

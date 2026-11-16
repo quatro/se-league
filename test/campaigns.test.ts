@@ -124,8 +124,14 @@ test('an expected returner who registers flips to Registered on their team', asy
   assert.equal(e.tryout, 0)
 })
 
+// A program's own limit on new players (division seats don't decide it).
+const setSpots = (name: string, spots: number | null, whenFull?: 'waitlist' | 'close') => {
+  const o = C.offerings(cid).find((x) => x.name === name)!
+  C.saveOffering(cid, o.id, { name: o.name, division_id: o.division_id, min_age: o.min_age, max_age: o.max_age, capacity: spots, reg_mode: o.reg_mode, when_full: whenFull }, A)
+}
 test('full program: free waitlist, no charge, not draftable; an offered spot registers when paid', async () => {
-  // T-Ball: 1 team × 2 = 2 seats; Ben has one.
+  // T-Ball takes 2 new players; Ben has one spot.
+  setSpots('T-Ball', 2)
   await C.startCheckout('2027-spring', family([kid('Cal', '2021-02-01', 'T-Ball')]), base).then((r) => paid(r.orderId))
   assert.equal(pub().offerings.find((o) => o.name === 'T-Ball')!.full, true)
   const before = sessions.length
@@ -160,10 +166,10 @@ test('full program: free waitlist, no charge, not draftable; an offered spot reg
 
 test('waitlist only, first come first served, expired offers, removing a family', async () => {
   const tball = () => C.offerings(cid).find((o) => o.name === 'T-Ball')!
-  const save = (mode: 'open' | 'waitlist' | 'closed') => { const o = tball(); C.saveOffering(cid, o.id, { name: o.name, division_id: o.division_id, min_age: o.min_age, max_age: o.max_age, reg_mode: mode }, A) }
+  const save = (mode: 'open' | 'waitlist' | 'closed') => { const o = tball(); C.saveOffering(cid, o.id, { name: o.name, division_id: o.division_id, min_age: o.min_age, max_age: o.max_age, capacity: o.capacity, reg_mode: mode }, A) }
   const sort = tball().sort
   // Ben, Cal and Dee hold three seats; a fourth opens. Gus is waiting, so it's Gus's, not the next signup's.
-  L.saveDivision('2027', L.divisionByKey('2027', 'tball')!.id, { key: 'tball', name: 'T-Ball', teams: 1, roster_size: 4, min_age: 5, max_age: 6 }, A)
+  setSpots('T-Ball', 4)
   assert.equal(C.availability(tball()).open, 1)
   save('waitlist')
   assert.equal(tball().sort, sort, 'saving a row keeps its order')
@@ -197,7 +203,7 @@ test('waitlist only, first come first served, expired offers, removing a family'
   assert.equal(pub().offerings.some((o) => o.name === 'T-Ball'), false)
   await assert.rejects(C.startCheckout('2027-spring', family([{ ...kid('Ivy', '2021-05-01', 'Major/Minor'), offeringId: tball().id }]), base), /pick a program/)
   save('open')
-  L.saveDivision('2027', L.divisionByKey('2027', 'tball')!.id, { key: 'tball', name: 'T-Ball', teams: 1, roster_size: 2, min_age: 5, max_age: 6 }, A)
+  setSpots('T-Ball', 2)
   // Full (over, even) — but a returner expected back in T-Ball already holds a seat, so they pay and register.
   const rae = L.createKid('Rae Kid', '2021-06-01')
   L.enroll('2027', rae.id, { divisionId: L.divisionByKey('2027', 'tball')!.id, returner: true }, A)
@@ -207,6 +213,25 @@ test('waitlist only, first come first served, expired offers, removing a family'
   paid(r.orderId)
   assert.equal(enr('Rae Kid').status, 'Registered')
   assert.equal(enr('Sid Kid').status, 'Waitlist')
+  // The Registration tab counts this registration's new and returning players separately.
+  const t = C.adminCampaign(cid).offerings.find((o) => o.name === 'T-Ball')!
+  assert.deepEqual([t.new_registered, t.returning_registered, t.waitlisted], [3, 1, 1])
+})
+
+test('per-program limits: one program can stop when full while the others keep going', async () => {
+  // T-Ball is full and stops taking new players: no waitlist, a clear message.
+  setSpots('T-Ball', 2, 'close')
+  assert.equal(pub().offerings.find((o) => o.name === 'T-Ball')!.waitlist, false)
+  await assert.rejects(C.startCheckout('2027-spring', family([kid('Tia', '2021-08-01', 'T-Ball')]), base), /T-Ball is full for 2027 and isn’t taking more/)
+  // A returner expected back still gets in — their seat is held.
+  const ray = L.createKid('Ray Kid', '2021-09-01')
+  L.enroll('2027', ray.id, { divisionId: L.divisionByKey('2027', 'tball')!.id, returner: true }, A)
+  const r = await C.startCheckout('2027-spring', family([kid('Ray', '2021-09-01', 'T-Ball')]), base)
+  assert.equal(C.order(r.orderId)!.status, 'pending')
+  // Major/Minor has no limit: never full, whatever the division seats say.
+  setSpots('Major/Minor', null)
+  assert.equal(pub().offerings.find((o) => o.name === 'Major/Minor')!.full, false)
+  setSpots('T-Ball', 2, 'waitlist')
 })
 
 test('abandoned checkout is cancelled when Stripe expires the session', async () => {
@@ -269,8 +294,22 @@ test('returning players: matched from last season, confirmed by the family, kept
   assert.equal(m[0]!.suggestOfferingId, off('Major/Minor'))
   assert.deepEqual(C.returningMatches(c, 'Sam', 'Old', '2020-05-01'), [], 'a 5-year-old Sam Old is not the 2026 Majors player')
   assert.deepEqual(C.returningMatches(c, 'William', 'Dob', '2015-02-02').map((x) => x.name), ['Will Dob'], 'same birthdate + last name')
-  assert.deepEqual(C.returningMatches(c, 'Will', 'Dob', '2015-02-03'), [], 'a recorded birthdate has to match')
+  // Same name, different birthdate: still asked (the dates can be wrong), but nothing about their team or program.
+  const diff = C.returningMatches(c, 'Will', 'Dob', '2015-02-03')
+  assert.equal(diff.length, 1)
+  assert.equal(diff[0]!.dobDiffers, true)
+  assert.equal(diff[0]!.team, null)
+  assert.equal(diff[0]!.division, null)
   assert.deepEqual(C.returningMatches(c, 'Newbie', 'Kid', '2015-05-01'), [])
+  // Near misses on the birthdate still ask; a different kid's birthdate doesn't.
+  for (const d of ['2015-02-05', '2015-04-02', '2016-02-02', '2015-01-30']) assert.equal(C.returningMatches(c, 'Will', 'Dob', d).length, 1, `close: ${d}`)
+  for (const d of ['2015-02-20', '2015-08-02', '2013-02-02', '2016-06-14']) assert.deepEqual(C.returningMatches(c, 'Will', 'Dob', d), [], `not close: ${d}`)
+  // Same last name + birthdate, a first name that's a near miss: a full match (team and all).
+  for (const f of ['Wil', 'Willy', 'Wiill']) assert.deepEqual(C.returningMatches(c, f, 'Dob', '2015-02-02').map((x) => [x.name, x.team, x.dobDiffers]), [['Will Dob', 'Astros', false]], f)
+  // …but a brother or sister with the same birthdate (a twin) is not.
+  assert.deepEqual(C.returningMatches(c, 'Grace', 'Dob', '2015-02-02'), [])
+  assert.ok(C.firstClose('jack', 'john') && C.firstClose('zack', 'zach') && !C.firstClose('ava', 'mia'))
+  assert.ok(C.dobClose('2015-03-04', '2015-04-03'), 'day and month swapped')
 
   const samP = { ...kid('Sam', '2015-05-01', 'Major/Minor'), lastName: 'Old' }
   assert.throws(() => C.quote('2027-spring', family([samP])), /played in 2026/)
@@ -288,7 +327,7 @@ test('returning players: matched from last season, confirmed by the family, kept
   const e = db.prepare(`SELECT * FROM enrollments WHERE season_id = '2027' AND kid_id = ?`).get(sam.id) as L.Enrollment
   assert.equal(e.status, 'Registered')
   assert.equal(L.kidHistory(sam.id).seasons.length, 2)
-  assert.deepEqual(C.returningMatches(c, 'Sam', 'Old', '2016-05-01'), [], 'now that we know his birthdate, a different one doesn’t match')
+  assert.deepEqual(C.returningMatches(c, 'Sam', 'Old', '2016-05-01').map((x) => [x.dobDiffers, x.team]), [[true, null]], 'now that we know his birthdate, a different one is only a “same player?” question')
 
   // "No, that's not my kid": a new record, never merged into the 2026 Tom.
   const t = await C.startCheckout('2027-spring', family([{ ...kid('Tom', '2015-07-07', 'Major/Minor'), lastName: 'Twin', returning: 'new' }]), base)

@@ -38,17 +38,21 @@ async function api<T>(method: 'GET' | 'POST', path: string, body?: Record<string
 export interface LineItem { name: string; description?: string; unitCents: number; qty: number }
 export interface CheckoutSession { id: string; url: string; status: string; payment_status: string; payment_intent: string | null; amount_total: number; metadata: Record<string, string> }
 
-export function createCheckout(p: { lines: LineItem[]; email: string; orderId: string; successUrl: string; cancelUrl: string; description: string; idempotencyKey: string; extraMetadata?: Record<string, string> }) {
+export function createCheckout(p: {
+  lines: LineItem[]; email: string; orderId: string; successUrl: string; cancelUrl: string; description: string; idempotencyKey: string; extraMetadata?: Record<string, string>
+  /** Keep the card for later installments (a payment plan). */ saveCard?: boolean
+  /** An existing Stripe customer (a plan family paying a balance). */ customer?: string | null
+}) {
   return api<CheckoutSession>('POST', '/checkout/sessions', {
     mode: 'payment',
-    customer_email: p.email,
+    ...(p.customer ? { customer: p.customer } : { customer_email: p.email, ...(p.saveCard ? { customer_creation: 'always' } : {}) }),
     client_reference_id: p.orderId,
     success_url: p.successUrl,
     cancel_url: p.cancelUrl,
     // Stripe's minimum; an unpaid session releases nothing we hold, it just expires.
     expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
     metadata: { order_id: p.orderId, ...p.extraMetadata },
-    payment_intent_data: { description: p.description, metadata: { order_id: p.orderId, ...p.extraMetadata } },
+    payment_intent_data: { description: p.description, metadata: { order_id: p.orderId, ...p.extraMetadata }, ...(p.saveCard ? { setup_future_usage: 'off_session' } : {}) },
     line_items: p.lines.map((l) => ({
       quantity: l.qty,
       price_data: { currency: 'usd', unit_amount: l.unitCents, product_data: { name: l.name, ...(l.description ? { description: l.description } : {}) } },
@@ -57,6 +61,21 @@ export function createCheckout(p: { lines: LineItem[]; email: string; orderId: s
 }
 
 export const getCheckout = (id: string) => api<CheckoutSession>('GET', `/checkout/sessions/${encodeURIComponent(id)}`)
+
+export interface PaymentIntent {
+  id: string; status: string; amount: number; customer: string | null
+  payment_method: string | { id: string; card?: { brand: string; last4: string; exp_month: number; exp_year: number } } | null
+}
+/** A payment with its card details (for "Visa •••• 4242" and charging the same card later). */
+export const getPaymentIntent = (id: string) => api<PaymentIntent>('GET', `/payment_intents/${encodeURIComponent(id)}?expand[]=payment_method`)
+
+/** Charge a saved card with no one at the keyboard (a scheduled installment). Throws with the bank's reason on a decline. */
+export function chargeSavedCard(p: { customer: string; paymentMethod: string; cents: number; description: string; metadata: Record<string, string>; idempotencyKey: string }) {
+  return api<PaymentIntent>('POST', '/payment_intents', {
+    amount: p.cents, currency: 'usd', customer: p.customer, payment_method: p.paymentMethod, off_session: true, confirm: true,
+    description: p.description, metadata: p.metadata,
+  }, p.idempotencyKey)
+}
 
 /** Create the webhook endpoint in the Stripe account (setup script); returns its signing secret. */
 export function createWebhookEndpoint(url: string) {

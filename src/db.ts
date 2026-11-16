@@ -367,4 +367,67 @@ if (addColumn('offerings', 'reg_mode', `TEXT NOT NULL DEFAULT 'open' CHECK (reg_
   db.exec(`UPDATE offerings SET reg_mode = 'closed' WHERE active = 0`)
 // A waitlist spot offered to a family: their personal pay link and the deadline to use it.
 addColumn('order_players', 'offer_token', 'TEXT')
+// Per-program limits (2026-11-16): a program's capacity is the number of NEW players this registration takes; when it fills,
+// when_full decides between a waitlist and stopping. A returner expected back in the program holds their seat (held_seat = 1):
+// they always get in and don't use a spot.
+addColumn('offerings', 'when_full', `TEXT NOT NULL DEFAULT 'waitlist' CHECK (when_full IN ('waitlist','close'))`)
+addColumn('order_players', 'held_seat', `INTEGER NOT NULL DEFAULT 0`)
+// Interest check (2026-11-16): outreach can ask "is your player coming back?" with one-click answers instead of
+// inviting a registration; the family's answer lives on the season enrollment.
+addColumn('outreach', 'kind', `TEXT NOT NULL DEFAULT 'register' CHECK (kind IN ('register','interest'))`)
+addColumn('enrollments', 'intent', `TEXT NOT NULL DEFAULT '' CHECK (intent IN ('','yes','no','unsure'))`)
+addColumn('enrollments', 'intent_at', 'TEXT')
+// Returner protection: when a division's buffer (open seats less returners still to register and the waitlist)
+// falls to protect_at or below, new players go to the waitlist. NULL = off.
+addColumn('offerings', 'protect_at', 'INTEGER')
+// Registration type: the annual spring league gets the returner machinery (held seats, protection, interest checks);
+// summer and fall registrations are simple sign-ups. Existing registrations tied to a season are the spring league.
+if (addColumn('campaigns', 'kind', `TEXT NOT NULL DEFAULT 'standard' CHECK (kind IN ('spring','standard'))`))
+  db.prepare(`UPDATE campaigns SET kind = 'spring' WHERE season_id IS NOT NULL`).run()
 addColumn('order_players', 'offer_expires_at', 'TEXT')
+// A sibling pick: set in advance in a team's chosen round so siblings play together; the draft skips that slot.
+addColumn('picks', 'sibling', 'INTEGER NOT NULL DEFAULT 0')
+
+// Payment plans: the league's own interest-free installments, charged to the card saved at checkout.
+addColumn('campaigns', 'plan_installments', 'INTEGER NOT NULL DEFAULT 0') // 0 = no plan; else total payments, the first at checkout
+addColumn('campaigns', 'plan_final_date', 'TEXT')                         // YYYY-MM-DD: the last payment is due by then
+addColumn('campaigns', 'plan_min_cents', 'INTEGER NOT NULL DEFAULT 0')    // offer a plan only on totals at least this much
+addColumn('orders', 'plan', 'INTEGER NOT NULL DEFAULT 0')
+addColumn('orders', 'stripe_customer_id', 'TEXT')
+addColumn('orders', 'stripe_pm_id', 'TEXT')
+addColumn('orders', 'card_label', `TEXT NOT NULL DEFAULT ''`)
+addColumn('orders', 'pay_token', 'TEXT')
+addColumn('orders', 'last_reminder_at', 'TEXT')
+db.exec(`CREATE TABLE IF NOT EXISTS installments (
+  id               TEXT PRIMARY KEY,
+  order_id         TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  seq              INTEGER NOT NULL,
+  due_date         TEXT NOT NULL,                  -- YYYY-MM-DD, league time zone
+  amount_cents     INTEGER NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'due' CHECK (status IN ('due','paid','failed','waived','void')),
+  paid_at          TEXT,
+  method           TEXT NOT NULL DEFAULT '',       -- card (at checkout) | auto | link | cash | check | other
+  stripe_payment_id TEXT,
+  attempts         INTEGER NOT NULL DEFAULT 0,     -- automatic charge attempts
+  last_attempt_at  TEXT,
+  next_attempt_at  TEXT,
+  last_error       TEXT NOT NULL DEFAULT '',
+  reminded_at      TEXT,                           -- the "coming up" email
+  note             TEXT NOT NULL DEFAULT '',
+  UNIQUE (order_id, seq)
+)`)
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS orders_pay_token ON orders(pay_token) WHERE pay_token IS NOT NULL`)
+// Collections history per order: every email, text, call, charge and note, automatic or by hand.
+db.exec(`CREATE TABLE IF NOT EXISTS collection_log (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  at       TEXT NOT NULL,
+  channel  TEXT NOT NULL CHECK (channel IN ('email','text','call','note','charge','payment')),
+  kind     TEXT NOT NULL DEFAULT '',        -- upcoming | failed | reminder | custom | declined | charged | recorded | waived | moved ...
+  subject  TEXT NOT NULL DEFAULT '',
+  body     TEXT NOT NULL DEFAULT '',
+  actor    TEXT NOT NULL DEFAULT '',
+  ok       INTEGER NOT NULL DEFAULT 1,
+  error    TEXT NOT NULL DEFAULT ''
+)`)
+db.exec(`CREATE INDEX IF NOT EXISTS collection_log_order ON collection_log(order_id, at)`)

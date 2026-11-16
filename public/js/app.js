@@ -11,6 +11,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const dotCls = (s) => ({ Registered: 'Registered', Expected: 'Expected', 'Need to contact': 'Need', Waitlist: 'Waitlist', 'Not returning': 'Not-returning', Withdrawn: 'Withdrawn' }[s] || '');
 const isAdmin = () => !!S.me?.admin;
+const signinUrl = () => `/signin?next=${encodeURIComponent(location.pathname + location.search)}`;
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 function toast(m, err) { const t = $('toast'); t.textContent = m; t.className = 'toast' + (err ? ' err' : ''); t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), err ? 4500 : 2600); }
@@ -21,7 +22,7 @@ async function call(method, url, body) {
   let data = null;
   try { data = await r.json(); } catch { /* empty */ }
   if (!r.ok) {
-    if (r.status === 401 && data?.error === 'login_required') location.href = '/admin';
+    if (r.status === 401 && data?.error === 'login_required') location.href = signinUrl();
     throw new Error(data?.error || `Request failed (${r.status})`);
   }
   return data;
@@ -53,8 +54,8 @@ function render() {
   $('seasonSel').innerHTML = st.seasons.slice().reverse().map((s) => `<option value="${esc(s.id)}" ${s.id === S.sid ? 'selected' : ''}>${s.year}${s.id === st.current ? ' · current' : s.status === 'complete' ? ' · finished' : ''}</option>`).join('');
   document.querySelectorAll('[data-admin]').forEach((el) => (el.hidden = !isAdmin()));
   $('live').innerHTML = `<span class="chip ${S.live ? 'live' : 'off'}">${S.live ? 'Live' : 'Reconnecting'}</span>`;
-  $('whoami').innerHTML = S.me?.admin ? `Signed in as <b>${esc(S.me.admin)}</b> · <button id="logout">Log out</button>` : `<a href="/admin">Admin login</a>`;
-  const lo = $('logout'); if (lo) lo.onclick = async () => { await act('POST', '/api/logout', {}); location.href = '/'; };
+  $('whoami').innerHTML = `Signed in as <b>${esc(S.me.user.email)}</b>${isAdmin() ? ' (admin)' : ''} · <button id="logout">Log out</button>`;
+  const lo = $('logout'); if (lo) lo.onclick = async () => { await act('POST', '/api/logout', {}); location.href = '/signin'; };
   $('capCsv').href = `/api/seasons/${encodeURIComponent(S.sid)}/capacity.csv`;
   if (S.tab === 'seats') renderSeats();
   if (S.tab === 'drafts') renderDrafts();
@@ -67,6 +68,7 @@ function render() {
   if (S.tab === 'regs') renderRegs();
   if (S.tab === 'seasons') renderSeasons();
   if (S.tab === 'log') renderLog();
+  if (S.tab === 'users' && !US.loaded) loadUsers(); // users.js
   if (S.tab === 'campaigns') loadCampaigns(); // campaigns.js
   if (S.tab === 'outreach' && OS.loadedFor !== S.sid) loadOutreach(); // outreach.js — reloads on tab open, not on every change, so a message being typed survives
 }
@@ -142,9 +144,81 @@ function renderSeats() {
       ${members}${flags.length && !complete() ? `<div class="flags">${flags.join('')}</div>` : ''}
     </article>`;
   }).join('');
+  renderAva(us);
   loadAges();
   const t = st.total;
   $('totals').innerHTML = `<span>League: <b>${t.capacity}</b> seats</span><span><b>${t.registered}</b> registered</span><span><b>${t.held}</b> held for expected returners</span><span><b>${t.open}</b> open</span>${st.unplaced && isAdmin() ? `<span class="warn-text">${st.unplaced} not in a division</span>` : ''}`;
+}
+
+/* ---------- anticipated vs actual, and where returners could get squeezed out ----------
+   Anticipated assumes every expected returner comes back; actual is who has registered.
+   The risk is a division filling up with new families while its returners haven't signed
+   up yet: if they come later there may be no seat. Seats held for expected returners keep
+   them safe only while the holds stand. */
+const RISK = {
+  over: { rank: 0, cls: 'crit', icon: '▲', label: 'Over' },
+  tight: { rank: 1, cls: 'warn', icon: '◆', label: 'Tight' },
+  watch: { rank: 2, cls: 'watch', icon: '●', label: 'Watch' },
+  ok: { rank: 3, cls: 'good', icon: '✓', label: 'OK' },
+};
+function riskOf(s, warnAt) {
+  const left = s.capacity - s.registered - s.held; // seats new families can still take
+  const out = s.held, signed = s.returnersRegistered;
+  if (!s.capacity) return null;
+  if (left < 0) return { ...RISK.over, why: `If every expected returner comes back, ${plural(-left, 'returner')} won’t have a seat.` };
+  const near = Math.max(warnAt, Math.ceil(s.capacity * 0.05));
+  if (left <= near && out > 0) return { ...RISK.tight, why: `Only ${plural(left, 'seat')} left for new kids, with ${plural(out, 'returner')} not signed up yet.` };
+  if (s.newRegistered > signed && out > left) return { ...RISK.watch, why: `New sign-ups (${s.newRegistered}) are ahead of returners (${signed}); ${plural(out, 'returner')} still to come.` };
+  return { ...RISK.ok, why: `${plural(left, 'seat')} open for new kids after every expected returner.` };
+}
+function renderAva(us) {
+  const box = $('ava');
+  if (complete() || !us.length) { box.hidden = true; return; }
+  const warnAt = S.st.season.warn_at ?? 4;
+  const rows = us.map((u) => ({ u, s: u.seats, r: riskOf(u.seats, warnAt) })).filter((x) => x.r)
+    .sort((a, b) => a.r.rank - b.r.rank || (a.s.capacity - a.s.registered - a.s.held) / a.s.capacity - (b.s.capacity - b.s.registered - b.s.held) / b.s.capacity);
+  if (!rows.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const scale = Math.max(...rows.map(({ s }) => Math.max(s.capacity, s.projected, s.registered + s.waitlist)), 1);
+  const pct = (n) => `${(100 * n / scale).toFixed(2)}%`;
+  const ticks = niceTicks(scale).filter((t) => t <= scale);
+  const tot = rows.reduce((a, { s }) => ({ cap: a.cap + s.capacity, ant: a.ant + s.projected, act: a.act + s.registered, ret: a.ret + s.returnersRegistered, out: a.out + s.held }), { cap: 0, ant: 0, act: 0, ret: 0, out: 0 });
+  const seg = (cls, n, tip) => (n > 0 ? `<i class="${cls}" style="width:${pct(n)}" data-tip="${esc(tip)}"></i>` : '');
+  const bar = (kind, u, s) => {
+    const name = u.name;
+    const inner = kind === 'ant'
+      ? seg('ret', s.returnersRegistered, `${name}: ${s.returnersRegistered} returners registered`) + seg('new', s.newRegistered, `${name}: ${s.newRegistered} new kids registered`)
+        + seg('held', s.held, `${name}: ${s.held} returners expected but not registered${s.atRisk ? ` (${s.atRisk} need contact)` : ''}`)
+      : seg('ret', s.returnersRegistered, `${name}: ${s.returnersRegistered} returners registered`) + seg('new', s.newRegistered, `${name}: ${s.newRegistered} new kids registered`)
+        + seg('wait', s.waitlist, `${name}: ${s.waitlist} on the waitlist`);
+    const n = kind === 'ant' ? s.projected : s.registered;
+    return `<div class="avrow"><span class="avlbl">${kind === 'ant' ? 'Anticipated' : 'Actual'}</span>
+      <div class="avtrack">${inner}<span class="cap" style="left:${pct(s.capacity)}" title="${s.capacity} seats"></span></div>
+      <span class="avnum">${n}${kind === 'act' && s.waitlist ? ` <span class="sub">+${s.waitlist} wait</span>` : ''}</span></div>`;
+  };
+  const top = rows.filter(({ r }) => r.rank < 2);
+  box.innerHTML = `<div class="hd"><h2>Anticipated vs actual</h2>
+      <div class="vlegend"><span><i class="sw yr1"></i>Returners registered</span><span><i class="sw yr2"></i>New kids registered</span><span><i class="sw heldsw"></i>Returners expected, not registered</span><span><i class="capsw"></i>Seats</span></div></div>
+    <div class="bd">
+      <div class="avsum">
+        <div><b>${tot.ant}</b><span>Anticipated<br><span class="sub">assuming returners come back</span></span></div>
+        <div><b>${tot.act}</b><span>Actual<br><span class="sub">registered so far</span></span></div>
+        <div><b>${tot.cap}</b><span>Seats</span></div>
+        <div><b>${tot.ret + tot.out ? Math.round(100 * tot.ret / (tot.ret + tot.out)) : 0}%</b><span>Returners signed up<br><span class="sub">${tot.ret} of ${tot.ret + tot.out}</span></span></div>
+      </div>
+      ${top.length ? `<div class="avalert"><b>Greatest risk:</b> ${top.map(({ u, r }) => `<span class="risk ${r.cls}"><span aria-hidden="true">${r.icon}</span> ${esc(u.name)}</span> ${esc(r.why)}`).join('<br>')}</div>` : '<div class="avalert ok"><b>No division at risk.</b> Every division has room for its expected returners.</div>'}
+      <div class="avchart">
+        <div class="avaxis" aria-hidden="true">${ticks.map((t) => `<span style="left:${pct(t)}">${t}</span>`).join('')}</div>
+        ${rows.map(({ u, s, r }) => `<div class="avdiv" role="img" aria-label="${esc(`${u.name}: anticipated ${s.projected}, actual ${s.registered}, ${s.capacity} seats. ${r.label}: ${r.why}`)}">
+          <div class="avhead"><b>${esc(u.name)}</b><span class="risk ${r.cls}"><span aria-hidden="true">${r.icon}</span> ${r.label}</span><span class="sub">${esc(r.why)}</span></div>
+          ${bar('ant', u, s)}${bar('act', u, s)}
+        </div>`).join('')}
+      </div>
+      <details><summary class="note">Show as a table</summary><div class="scroll"><table class="kt">
+        <tr><th>League</th><th class="num">Seats</th><th class="num">Anticipated</th><th class="num">Actual</th><th class="num">Returners registered</th><th class="num">New registered</th><th class="num">Returners still to sign up</th><th class="num">Open for new kids</th><th>Risk</th></tr>
+        ${rows.map(({ u, s, r }) => `<tr><td>${esc(u.name)}</td><td class="num">${s.capacity}</td><td class="num">${s.projected}</td><td class="num">${s.registered}</td><td class="num">${s.returnersRegistered}</td><td class="num">${s.newRegistered}</td><td class="num">${s.held}</td><td class="num">${s.capacity - s.registered - s.held}</td><td>${r.label}</td></tr>`).join('')}
+      </table></div></details>
+    </div>`;
 }
 
 /* ---------- drafts ---------- */
@@ -605,7 +679,7 @@ $('logRefresh').onclick = loadLog;
 $('logTable').onclick = (e) => { const kb = e.target.closest('[data-kid]'); if (kb) showKid(kb.dataset.kid); };
 
 /* ---------- tabs ---------- */
-const VIEWS = ['seats', 'drafts', 'kids', 'campaigns', 'outreach', 'regs', 'divisions', 'seasons', 'log'];
+const VIEWS = ['seats', 'drafts', 'kids', 'campaigns', 'finance', 'outreach', 'regs', 'divisions', 'seasons', 'users', 'log'];
 function setTab(t) {
   const btn = document.querySelector(`[data-tab="${t}"]`);
   if (!btn || (btn.hasAttribute('data-admin') && !isAdmin())) t = 'seats';
@@ -616,38 +690,11 @@ function setTab(t) {
   if (t === 'regs') loadRegs();
   if (t === 'log') loadLog();
   if (t === 'outreach') OS.loadedFor = null;
+  if (t === 'users') US.loaded = false;
+  if (t === 'finance') loadFinance(); // finance.js — loads on tab open, and again after each action
   render();
 }
 document.querySelectorAll('#tabs button').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
-
-/* ---------- gates ---------- */
-function gate(html, bind) { $('app').hidden = true; const g = $('gate'); g.innerHTML = html; g.hidden = false; bind(g); }
-function loginGate() {
-  gate(`<form class="gate" id="lf"><h1><small style="display:block;font-size:.8rem;letter-spacing:.14em;color:var(--muted)">${esc(S.home?.league || 'League')}</small>Admin login</h1>
-    <input type="text" id="lu" placeholder="Username" autocomplete="username" required aria-label="Username">
-    <input type="password" id="lp" placeholder="Password" autocomplete="current-password" required aria-label="Password">
-    <p class="err-text" id="le"></p><button class="btn primary" type="submit">Log in</button><a href="/" class="note">← Back to seat counts</a></form>`, (g) => {
-    g.querySelector('#lu').focus();
-    g.querySelector('#lf').onsubmit = async (e) => {
-      e.preventDefault();
-      try { await call('POST', '/api/login', { username: g.querySelector('#lu').value, password: g.querySelector('#lp').value }); location.reload(); }
-      catch (err) { g.querySelector('#le').textContent = err.message; }
-    };
-  });
-}
-function viewerGate() {
-  gate(`<form class="gate" id="vf"><h1><small style="display:block;font-size:.8rem;letter-spacing:.14em;color:var(--muted)">${esc(S.home?.league || 'League')}</small>League</h1>
-    <p class="note">Enter the league's code.</p>
-    <input type="password" id="vc" placeholder="League code" required aria-label="League code">
-    <p class="err-text" id="ve"></p><button class="btn primary" type="submit">Continue</button><a href="/admin" class="note">Admin login</a></form>`, (g) => {
-    g.querySelector('#vc').focus();
-    g.querySelector('#vf').onsubmit = async (e) => {
-      e.preventDefault();
-      try { await call('POST', '/api/viewer', { code: g.querySelector('#vc').value }); location.reload(); }
-      catch (err) { g.querySelector('#ve').textContent = err.message; }
-    };
-  });
-}
 
 /* ---------- boot ---------- */
 async function refresh() {
@@ -668,8 +715,7 @@ function connect() {
 
 (async () => {
   [S.me, S.home] = await Promise.all([call('GET', '/api/me'), call('GET', '/api/home')]);
-  if (location.pathname.startsWith('/admin') && !S.me.admin) return loginGate();
-  if (!S.me.viewer) return viewerGate();
+  if (!S.me.user) { location.href = signinUrl(); return; }
   let saved = null;
   try { saved = localStorage.getItem('league-season'); } catch { /* private */ }
   S.sid = new URLSearchParams(location.search).get('season') || saved || S.home.current;

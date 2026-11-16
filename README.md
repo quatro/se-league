@@ -60,8 +60,27 @@ cp .env.example .env            # then fill in values
 pnpm build
 pnpm start                      # http://127.0.0.1:3040
 pnpm test
-pnpm admin add|passwd|remove|list <username>   # shared league accounts
+pnpm users add <email> [user|admin] [name]     # who may sign in (also the admin Users tab)
+pnpm users link <email>                        # print a one-time sign-in link
+pnpm admin add|passwd|remove|list <username>   # break-glass password account
 ```
+
+## Sign-in
+
+Nothing but the public registration forms (`/register/<slug>`), webhooks and
+`/healthz` is visible without signing in. People sign in at `/signin` with an
+emailed one-time link (20 minutes, single use; the link page needs one press so
+mail scanners can't spend it). Only emails on the list can sign in:
+
+- **user** — Seats (counts, ages, capacity CSV) and draft boards, read-only.
+- **admin** — everything, plus the **Users** tab to manage the list.
+
+The list and sessions live in the shared auth DB (`AUTH_DB_PATH`), and the
+`league_session` cookie uses `COOKIE_DOMAIN`, so one sign-in covers the draft
+domain too. Links are sent through Resend (`RESEND_API_KEY` + `MAIL_FROM`);
+without them the link is written to the service log and admins use **Copy
+link** on the Users tab. The old `admin` password login still works from
+"Sign in with a password" as a way in if email breaks.
 
 It is deployed as the **user** systemd unit `se-league` on port 3040, serving
 https://registration.crushworldseries.com. After any change, run

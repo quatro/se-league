@@ -66,13 +66,20 @@ test('rollover 2026 → 2027: returners keep teams, others move up by age, too o
   assert.equal(enr('2027', 'Rook Eight').division_id, div('2027', 'nine').id)
   assert.equal(enr('2027', 'Tee Six').division_id, div('2027', 'rookie').id)
   assert.equal(enr('2027', 'Tee Six').draft_id, draft('2027', 'rookie').id)
-  assert.equal(teamName(enr('2027', 'Min Eleven')), 'Tigers')
+  // A Minors returner is assumed to be trying out for Majors until they register and answer: team held, not kept.
+  assert.equal(teamName(enr('2027', 'Min Eleven')), null)
+  assert.equal(L.team(enr('2027', 'Min Eleven').returning_team_id!)!.name, 'Tigers')
+  assert.equal(enr('2027', 'Min Eleven').tryout, 1)
+  assert.equal(enr('2027', 'Min Eleven').draft_id, draft('2027', 'majors').id)
   assert.equal(teamName(enr('2027', 'Maj Twelve')), 'Reds')
   assert.equal(enr('2027', 'Maj Old'), undefined)
   // A 9 turning 10 lands in the shared pool and tries out for Majors first.
   assert.equal(enr('2027', 'Nina Nine').division_id, div('2027', 'minors').id)
   assert.equal(enr('2027', 'Nina Nine').tryout, 1)
   assert.equal(enr('2027', 'Nina Nine').draft_id, draft('2027', 'majors').id)
+  // A rising 9 is assumed to be trying out for Majors too, until they register and answer.
+  assert.equal(enr('2027', 'Rook Eight').tryout, 1)
+  assert.equal(enr('2027', 'Rook Eight').draft_id, draft('2027', 'majors').id)
   assert.equal(enr('2027', 'Rook Seven').prior, 'Rookie · Cubs (2026)')
   assert.equal(enr('2027', 'Rook Seven').status, 'Expected')
 })
@@ -103,17 +110,34 @@ test('registration: "Major/Minor" goes to the shared pool and tries out; other p
   assert.equal(L.team(enr('2027', 'Maj Twelve').team_id!)!.name, 'Reds')
 })
 
-test('tryouts: a Minors returner trying out leaves their team; one who doesn’t stays', () => {
-  const tigers = enr('2027', 'Min Try').team_id!
-  L.setTryout(enr('2027', 'Min Try').id, true, A)
+test('tryouts: a Minors returner trying out leaves their team; one who says no goes back to it', () => {
+  const tigers = enr('2027', 'Min Eleven').returning_team_id!
+  L.setTryout(enr('2027', 'Min Eleven').id, false, A)
+  assert.equal(enr('2027', 'Min Eleven').team_id, tigers)
+  assert.equal(enr('2027', 'Min Eleven').draft_id, null)
   assert.equal(enr('2027', 'Min Try').team_id, null)
   assert.equal(enr('2027', 'Min Try').returning_team_id, tigers)
-  assert.equal(enr('2027', 'Min Eleven').draft_id, null)
   // A 9 in the 9-Year-Old League can try out too.
   L.setTryout(enr('2027', 'Rook Eight').id, true, A)
   assert.deepEqual(pool('2027', 'majors'), ['Min Try', 'New Ten', 'Nina Nine', 'Rook Eight'])
   // Minors draft is waiting on Majors.
   assert.throws(() => D.makePick(draft('2027', 'minors').id, enr('2027', 'Min Eleven').id, A), /Waiting for the Majors draft/)
+})
+
+test('sibling pick: set ahead in a chosen round, skipped by the draft, kept by undo and clear', () => {
+  const maj = draft('2027', 'majors').id
+  const reds = L.divisionTeams(div('2027', 'majors').id).find((t) => t.name === 'Reds')!
+  const other = reds
+  assert.throws(() => D.siblingPick(maj, enr('2027', 'Rook Eight').id, reds.id, 3, A), /no round 3 pick/)
+  D.siblingPick(maj, enr('2027', 'Rook Eight').id, other.id, 2, A)
+  const st = D.draftState(maj, true)
+  assert.equal(st.picks.find((x) => x.sibling)?.round, 2)
+  assert.equal(st.clock.clockStart, null, 'a sibling pick doesn’t start the clock')
+  assert.throws(() => D.undoLast(maj, A), /No picks to undo/)
+  D.clearPicks(maj, A)
+  assert.equal(D.draftState(maj, true).picks.length, 1)
+  D.removePick(maj, `2-${other.id}`, A)
+  assert.equal(D.draftState(maj, true).picks.length, 0)
 })
 
 test('Majors draft: picks move kids to Majors; closing sends the rest to the Minors draft', () => {
@@ -129,12 +153,15 @@ test('Majors draft: picks move kids to Majors; closing sends the rest to the Min
   assert.equal(g.seats.capacity, 12)
   const r = D.closeDraft(maj, A)
   assert.equal(r.undrafted, 3)
-  // Undrafted tryouts (including the Minors returner) go to the Minors draft, not back to the old team; the 9 goes too.
-  assert.deepEqual(pool('2027', 'minors'), ['Min Try', 'New Ten', 'Rook Eight'])
+  // Undrafted tryouts (including the Minors returner) go to the Minors draft, not back to the old team.
+  // Minors stays 10–12: an undrafted 9 goes straight back to the 9-Year-Old League, not into the Minors draft.
+  assert.deepEqual(pool('2027', 'minors'), ['Min Try', 'New Ten'])
+  assert.equal(enr('2027', 'Rook Eight').draft_id, null)
+  assert.equal(place('2027', 'Rook Eight').eff_division_id, div('2027', 'nine').id)
   assert.equal(enr('2027', 'Min Try').team_id, null)
 })
 
-test('Minors draft: undrafted 9s stay in their own league', () => {
+test('Minors draft: 9s are never in it', () => {
   const min = draft('2027', 'minors').id
   D.makePick(min, enr('2027', 'Min Try').id, A)
   assert.equal(place('2027', 'Min Try').eff_division_id, div('2027', 'minors').id)
@@ -181,7 +208,8 @@ test('kid history spans seasons', () => {
 test('late 2026 rosters carry into 2027 as returners', () => {
   const r = importRosters('2026', 'Name,Birthdate,Division,Team\nLate Minor,2016-02-01,Minors,Tigers', A)
   assert.equal(r.carried, 1)
-  assert.equal(L.team(enr('2027', 'Late Minor').team_id!)!.name, 'Tigers')
+  assert.equal(L.team(enr('2027', 'Late Minor').returning_team_id!)!.name, 'Tigers')
+  assert.equal(enr('2027', 'Late Minor').tryout, 1)
 })
 
 test('late rosters create returners\' teams the next season lacks, and playing-up kids keep the higher team', () => {
