@@ -209,16 +209,18 @@ function lev(a: string, b: string): number {
 
 /**
  * Brothers and sisters of a returning player, offered so the family can add them in one click.
- * Only when the details are right on both counts: the player's name and birthdate match a kid
- * on last season's rosters exactly, and the parent's email or mobile is one we have on file for
- * that kid. Anyone else gets nothing, so a stranger can't use a name to see who else is in a family.
+ * Only when the details are right on both counts: the player matches a kid on last season's
+ * rosters (exactly, or a near miss the family confirmed), and the parent's email or mobile is one
+ * we have on file for that kid. Anyone else gets nothing, so a stranger can't use a name to see who else is in a family.
  * Siblings are the other kids under the same parent email or phone who played last season.
  */
 export function siblingMatches(c: Campaign, first: string, last: string, dob: string, email: string, phone: string) {
   const born = normDate(dob)
   const mail = email.trim().toLowerCase(), tel = phone.replace(/\D/g, '').slice(-10)
   if (!born || (!mail && tel.length < 10)) return []
-  const kid = returningMatches(c, first, last, dob).map((m) => db.prepare('SELECT * FROM kids WHERE id = ?').get(m.id) as Kid).find((k) => k?.birthdate === born)
+  // The player they confirmed — an exact match or a near miss (a birthdate slip, a nickname). What proves
+  // it's this family is the parent's email or phone below, not the birthdate.
+  const kid = returningMatches(c, first, last, dob).map((m) => db.prepare('SELECT * FROM kids WHERE id = ?').get(m.id) as Kid | undefined).find(Boolean)
   if (!kid) return []
   const mine = db.prepare('SELECT email, phone FROM contacts WHERE kid_id = ?').all(kid.id) as { email: string; phone: string }[]
   const telOf = (p: string) => p.replace(/\D/g, '').slice(-10)

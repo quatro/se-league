@@ -23,6 +23,7 @@ const D = await import('../src/lib/drafts.js')
 const C = await import('../src/lib/campaigns.js')
 const { verifyStripeSignature } = await import('../src/lib/stripe.js')
 const { db } = await import('../src/db.js')
+const { addContact } = await import('../src/lib/contacts.js')
 const A = 'test'
 const base = 'https://league.test'
 
@@ -310,6 +311,17 @@ test('returning players: matched from last season, confirmed by the family, kept
   assert.deepEqual(C.returningMatches(c, 'Grace', 'Dob', '2015-02-02'), [])
   assert.ok(C.firstClose('jack', 'john') && C.firstClose('zack', 'zach') && !C.firstClose('ava', 'mia'))
   assert.ok(C.dobClose('2015-03-04', '2015-04-03'), 'day and month swapped')
+  // Brothers and sisters: found through the parent's email or phone on file — also when the family
+  // confirmed a near-miss birthdate — and never for someone who doesn't know the parent's contact.
+  const grace = L.createKid('Grace Dob', '2015-09-09')
+  L.enroll('2026', grace.id, { divisionId: L.divisionByKey('2026', 'majors')!.id, teamId: astros.id, status: 'Registered' }, A)
+  for (const k of [will.id, grace.id]) addContact(k, { name: 'Pat Dob', email: 'pat.dob@example.com', phone: '859-555-0101' }, 'import')
+  const sibs = (dob: string, email: string, phone = '') => C.siblingMatches(c, 'Will', 'Dob', dob, email, phone).map((x) => x.firstName)
+  assert.deepEqual(sibs('2015-02-02', 'pat.dob@example.com'), ['Grace'])
+  assert.deepEqual(sibs('2015-03-03', 'PAT.DOB@example.com'), ['Grace'], 'near-miss birthdate, parent email on file')
+  assert.deepEqual(sibs('2015-02-02', '', '(859) 555-0101'), ['Grace'], 'or the parent phone')
+  assert.deepEqual(sibs('2015-02-02', 'someone@example.com'), [], 'not their parent')
+  assert.deepEqual(sibs('2019-08-08', 'pat.dob@example.com'), [], 'not the player')
 
   const samP = { ...kid('Sam', '2015-05-01', 'Major/Minor'), lastName: 'Old' }
   assert.throws(() => C.quote('2027-spring', family([samP])), /played in 2026/)
