@@ -636,3 +636,28 @@ button.rcard:hover,button.rcard:focus-visible{border-color:var(--ink);outline:no
 .sibreg{font-size:.85rem;font-weight:600;color:var(--ok)}
 .sibjump{margin:10px 0 0;width:100%;text-align:left;font:inherit;font-weight:600;padding:10px 14px;border-radius:10px;border:1.5px dashed var(--ink);background:transparent;color:var(--ink);cursor:pointer}
 .sibjump:hover,.sibjump:focus-visible{background:color-mix(in srgb,var(--ink) 6%,transparent)}
+/* ---- parent first: returning family panel ---- */
+.famslot{min-width:0}
+.fampanel{display:grid;gap:10px;padding:18px;border-radius:14px;background:var(--card);border:1.5px solid var(--ink);box-shadow:inset 0 5px 0 var(--stitch),0 6px 18px rgba(20,33,61,.08);padding-top:22px}
+.fampanel h3{margin:0;font-family:var(--display);font-weight:800;font-size:1.5rem;line-height:1.1}
+.fampanel p{margin:0}
+.famrow{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap}
+.famrow .sub{flex:1;min-width:200px;font-size:.85rem}
+.famcode{width:9.5ch;font:700 1.5rem/1 var(--body);letter-spacing:.3em;text-align:center;padding:10px 8px}
+.famkids{display:grid;gap:8px}
+.famkid{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px;border:1.5px solid var(--line);border-radius:12px;background:var(--bg)}
+.famkid.done{opacity:.75}
+.seg{display:inline-flex;border:1.5px solid var(--line);border-radius:999px;padding:3px;background:var(--card);flex:none}
+.seg label{position:relative;cursor:pointer}
+.seg input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.seg span{display:block;padding:7px 14px;border-radius:999px;font-weight:600;font-size:.88rem;color:var(--muted);white-space:nowrap}
+.seg input:checked+span{background:var(--ink);color:var(--card)}
+.seg label:last-child input:checked+span{background:var(--muted);color:var(--card)}
+.seg input:focus-visible+span{outline:2px solid var(--blue);outline-offset:2px}
+@media (max-width:520px){.famkid .seg{width:100%}.seg label{flex:1;text-align:center}}
+
+/* Majors tryouts: what applies to this player */
+.tryinfo{display:flex;flex-direction:column;gap:2px;border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 8%,var(--card));padding:8px 12px;border-radius:4px;margin-bottom:10px}
+.tryinfo span{color:var(--muted);font-size:.9rem}
+.reg .missing{outline:2px solid var(--stitch);outline-offset:3px;border-radius:4px}
+.tryq .sub{display:block;margin-top:1px}

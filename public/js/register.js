@@ -37,6 +37,11 @@ const matchOf = (sec) => sec._matches?.find((m) => m.id === sec._returning);
 
 /* ---------- questions ---------- */
 function questionHtml(q, name, val) {
+  const html = questionHtml0(q, name, val);
+  // Required questions are marked so "Done" can jump to the first one left blank.
+  return q.required ? html.replaceAll(`name="${name}"`, `name="${name}" data-req`) : html;
+}
+function questionHtml0(q, name, val) {
   const req = q.required ? ' <span aria-hidden="true" style="color:var(--stitch)">*</span>' : '';
   const help = q.help ? `<small>${esc(q.help)}</small>` : '';
   const id = `${name}`;
@@ -94,6 +99,98 @@ function playerCard(d = {}) {
   renderPlayer(sec);
   lookupReturning(sec);
   return sec;
+}
+
+/* Parent first: a known email → a 6-digit code by email → their players from last season, ready to add
+   (or mark "Not this year"). Nothing about the kids shows until the code checks out. */
+const FAM = { state: 'idle', email: '', token: '', kids: [], pick: {}, added: [] };
+async function famLookup() {
+  const email = $('form').elements.gEmail.value.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email === FAM.email) return;
+  if (FAM.state === 'verified' || FAM.state === 'done') return; // already found them
+  FAM.email = email;
+  const r = await call('POST', `/api/register/${encodeURIComponent(slug)}/family/lookup`, { email }).catch(() => ({ known: false }));
+  if ($('form').elements.gEmail.value.trim().toLowerCase() !== email) return;
+  FAM.state = r.known ? 'known' : 'idle';
+  drawFam();
+}
+function drawFam(err = '') {
+  const el = $('famPanel'), prior = C.campaign.year - 1, year = C.campaign.year;
+  el.hidden = FAM.state === 'idle' || FAM.state === 'dismissed';
+  if (el.hidden) { el.innerHTML = ''; return; }
+  const e = err ? `<p class="err-text" role="alert">${esc(err)}</p>` : '';
+  if (FAM.state === 'known') {
+    el.innerHTML = `<div class="fampanel"><p class="reyebrow">Returning family</p>
+      <h3>Fill in your players from ${prior}</h3>
+      <p>This email is on file with the league. We’ll email you a 6-digit code — enter it here and we’ll add your players for you.</p>${e}
+      <div class="famrow"><button type="button" class="btn primary" data-fam="send">Email me a code</button>
+      <button type="button" class="linkbtn" data-fam="dismiss">No thanks, I’ll add them myself</button></div></div>`;
+  } else if (FAM.state === 'sent') {
+    el.innerHTML = `<div class="fampanel"><p class="reyebrow">Check your email</p>
+      <h3>Enter the code we sent</h3>
+      <p>It went to <b>${esc(FAM.email)}</b> and works for 15 minutes. Can’t find it? Check spam.</p>
+      <div class="famrow"><input class="famcode" id="famCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" aria-label="6-digit code">
+      <button type="button" class="btn primary" data-fam="verify">Confirm</button></div>${e}
+      <div class="famrow"><button type="button" class="linkbtn" data-fam="send">Send a new code</button><button type="button" class="linkbtn" data-fam="dismiss">I’ll add them myself</button></div></div>`;
+    $('famCode').focus();
+  } else if (FAM.state === 'verified') {
+    const open = FAM.kids.filter((k) => !k.registered);
+    const yes = open.filter((k) => FAM.pick[k.kidId] === 'yes' && !onFormKid(k)).length;
+    el.innerHTML = `<div class="fampanel"><p class="reyebrow">Welcome back</p>
+      <h3>Your players from ${prior}</h3>
+      <p>Who’s playing in ${year}? We’ll add them below with their details filled in.</p>
+      <div class="famkids">${FAM.kids.map((k) => `<div class="famkid ${k.registered ? 'done' : ''}">
+        <span class="rcap" aria-hidden="true">${esc((k.firstName[0] || '') + (k.lastName[0] || ''))}</span>
+        <span class="rwho"><b>${esc(k.firstName)} ${esc(k.lastName)}</b><span>${[k.division, k.team].filter(Boolean).map(esc).join(' · ') || 'Played'} in ${k.year}</span></span>
+        ${k.registered ? `<span class="sibreg">✓ Registered for ${year}</span>` : onFormKid(k) ? '<span class="sibreg">✓ Added below</span>' : `<div class="seg" role="radiogroup" aria-label="${esc(k.firstName)} in ${year}">
+          <label><input type="radio" name="fk-${esc(k.kidId)}" value="yes" ${FAM.pick[k.kidId] === 'yes' ? 'checked' : ''}><span>Playing</span></label>
+          <label><input type="radio" name="fk-${esc(k.kidId)}" value="no" ${FAM.pick[k.kidId] === 'no' ? 'checked' : ''}><span>Not this year</span></label></div>`}
+      </div>`).join('')}</div>${e}
+      <div class="famrow">${open.length ? `<button type="button" class="btn primary" data-fam="add">${yes ? `Add ${yes === 1 ? 'player' : `${yes} players`}` : 'Save'}</button>` : ''}
+        <span class="sub">“Not this year” frees their spot for another player — you can change your mind later.</span></div></div>`;
+  } else if (FAM.state === 'done') {
+    const no = FAM.kids.filter((k) => !k.registered && FAM.pick[k.kidId] === 'no');
+    el.innerHTML = `<div class="rbanner yes" role="status"><span class="rcheck" aria-hidden="true">✓</span>
+      <div><b>${FAM.added.length ? `Added ${FAM.added.map(esc).join(' and ')} below` : 'Saved'}</b>${no.length ? `<span>${no.map((k) => esc(k.firstName)).join(' and ')} — not playing this year.</span>` : ''}</div>
+      <button type="button" class="linkbtn" data-fam="reopen">Change</button></div>`;
+  }
+}
+const onFormKid = (k) => [...document.querySelectorAll('.player')].some((p) => p._returning === k.kidId);
+async function famAction(act) {
+  const api = (path, body) => call('POST', `/api/register/${encodeURIComponent(slug)}/family/${path}`, body);
+  try {
+    if (act === 'dismiss') { FAM.state = 'dismissed'; return drawFam(); }
+    if (act === 'reopen') { FAM.state = 'verified'; return drawFam(); }
+    if (act === 'send') { const r = await api('code', { email: FAM.email }); FAM.state = r.sent ? 'sent' : 'idle'; return drawFam(); }
+    if (act === 'verify') {
+      const v = await api('verify', { email: FAM.email, code: $('famCode').value });
+      Object.assign(FAM, { state: 'verified', token: v.token, kids: v.kids });
+      FAM.pick = Object.fromEntries(v.kids.map((k) => [k.kidId, k.notReturning ? 'no' : 'yes']));
+      // Save them typing what we already have for the parent.
+      const f = $('form').elements;
+      if (!f.gFirst.value) f.gFirst.value = v.guardian.firstName;
+      if (!f.gLast.value) f.gLast.value = v.guardian.lastName;
+      if (!f.gPhone.value) f.gPhone.value = v.guardian.phone;
+      return drawFam();
+    }
+    if (act === 'add') {
+      const open = FAM.kids.filter((k) => !k.registered && !onFormKid(k));
+      for (const k of open) {
+        const was = k.notReturning ? 'no' : 'yes';
+        if (FAM.pick[k.kidId] !== was) { await api('intent', { token: FAM.token, kidId: k.kidId, intent: FAM.pick[k.kidId] }); k.notReturning = FAM.pick[k.kidId] === 'no'; }
+      }
+      const add = open.filter((k) => FAM.pick[k.kidId] === 'yes');
+      // An untouched empty card makes way for their real players.
+      const blank = cards().find((p) => !p.querySelector('[name=first]').value.trim() && !p.querySelector('[name=last]').value.trim() && !p.querySelector('[name=dob]').value);
+      if (blank && add.length) blank.remove();
+      let first;
+      for (const k of add) { const sec = playerCard({ firstName: k.firstName, lastName: k.lastName, birthdate: k.birthdate, returning: k.kidId }); first ||= sec; }
+      FAM.added = [...FAM.added, ...add.map((k) => k.firstName)];
+      FAM.state = 'done'; drawFam();
+      redrawSiblings(); renderSummary();
+      if (first) { openCard(first); first.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    }
+  } catch (err) { drawFam(err.message); }
 }
 
 /* Did this player play last season? Look them up once the name and birthdate are in,
@@ -209,7 +306,7 @@ function drawReturning(sec) {
   if (m) {
     const where = [m.division, m.team].filter(Boolean).map(esc).join(' · ');
     box.innerHTML = `<div class="rbanner yes" role="status"><span class="rcheck" aria-hidden="true">✓</span>
-      <div><b>Welcome back, ${esc(first)}!</b><span>${where ? `${where} in ${m.year}. ` : ''}${m.dobDiffers ? 'We’ll update the birthdate on file.' : 'We picked their program and skipped the new-player questions.'}</span></div>
+      <div><b>Welcome back, ${esc(first)}!</b><span>${where ? `${where} in ${m.year}. ` : ''}${m.dobDiffers ? 'We’ll update the birthdate on file.' : 'We picked their division and skipped the new-player questions.'}</span></div>
       <button type="button" class="linkbtn" data-askret>Not ${esc(first)}? Change</button></div>`;
   } else if (sec._returning === 'new') {
     box.innerHTML = `<div class="rbanner" role="status"><div><b>New player — welcome!</b></div><button type="button" class="linkbtn" data-askret>Change</button></div>`;
@@ -249,7 +346,7 @@ function askReturning(sec) {
   } else if (ms.length === 1) {
     body = `<p class="reyebrow">Welcome back?</p><h2 id="retTitle">Is this ${esc(first)}?</h2>
       <p class="rlead">We found this player on our ${prior} rosters${m0.name.split(' ')[0].toLowerCase() !== first.toLowerCase() ? ` — listed as <b>${esc(m0.name.split(' ')[0])}</b>` : ''}.</p>${card(m0, false)}
-      <p class="rnote">Say yes and they keep their returning spot — we’ll pick their program and skip the new-player questions.</p>
+      <p class="rnote">Say yes and they keep their returning spot — we’ll pick their division and skip the new-player questions.</p>
       <div class="ractions"><button type="button" class="btn primary big" data-ans="${esc(m0.id)}">Yes, that’s ${esc(first)}</button>
       <button type="button" class="btn" data-ans="new">No — a different player</button></div>`;
   } else {
@@ -304,10 +401,10 @@ function renderPlayer(sec) {
   const ok = C.offerings.filter((o) => fits(o, age));
   const cur = sec.querySelector('[name=program]:checked')?.value || d.offeringId;
   const prog = sec.querySelector('.programs');
-  prog.innerHTML = age == null ? '<p class="note">Enter a birthdate to see the programs this player can join.</p>'
-    : ok.length ? `<b style="font-size:.88rem">Program</b>${ok.map((o) => `<label><input type="radio" name="program-${sec.dataset.pid}" data-program value="${esc(o.id)}" ${o.id === cur || ok.length === 1 ? 'checked' : ''}>
+  prog.innerHTML = age == null ? '<p class="note">Enter a birthdate to see the divisions this player can join.</p>'
+    : ok.length ? `<b style="font-size:.88rem">Division</b>${ok.map((o) => `<label><input type="radio" name="program-${sec.dataset.pid}" data-program value="${esc(o.id)}" ${o.id === cur || ok.length === 1 ? 'checked' : ''}>
         <span><b>${esc(o.name)} ${shutFor(o, matchOf(sec)) ? '<span class="pill wait">Full</span>' : fullFor(o, matchOf(sec)) ? `<span class="pill wait">${o.protected ? 'Waitlist' : 'Full — waitlist'}</span>` : o.left != null && o.left <= 5 ? `<span class="pill wait">${o.left} left</span>` : ''}</b>${o.description ? `<span class="sub">${esc(o.description)}</span>` : ''}</span></label>`).join('')}`
-      : `<p class="err-text">No ${C.campaign.year} program fits league age ${age}.</p>`;
+      : `<p class="err-text">No ${C.campaign.year} division fits league age ${age}.</p>`;
   const offeringId = sec.querySelector('[data-program]:checked')?.value;
   const offering = C.offerings.find((o) => o.id === offeringId);
   // Say it plainly the moment we know: full, but they can still sign up and pay nothing today.
@@ -334,18 +431,37 @@ function renderPlayer(sec) {
   sec.querySelector('.pqs').innerHTML = tryoutHtml(sec, offering, d) + qs.map((q) => questionHtml(q, `pq-${sec.dataset.pid}-${q.id}`, prevA[q.id])).join('');
   sec._saved = null;
 }
-/* A returning Minors player says whether they'll try out for Majors. Until they answer we assume they are;
-   "no" keeps them on their Minors team. */
-const asksTryout = (sec, offering) => { const m = matchOf(sec); return !!offering && (offering.tryout || !!(m?.tryoutTeam && offering.id === m.seatOfferingId)); };
+/* Majors tryouts depend on where the player stands.
+   9-Year-Old League: try out for Majors or not.
+   Major/Minor: back on a Majors team → nothing to do. Back on a Minors team → stay on it (no tryout), or try out
+   and go back to it if not drafted. Moving up from the 9s → tryouts required; Majors and Minors, or Minors only.
+   New to the league → tryouts required, nothing to choose. */
+const groupCaseOf = (sec, offering) => (offering?.tryout === 'group' ? matchOf(sec)?.groupCase ?? null : null);
+const asksTryout = (sec, offering) => !!offering && (offering.tryout === 'playup' || ['minors', 'rising'].includes(groupCaseOf(sec, offering)));
 function readTryout(sec) { const v = sec.querySelector(`[name=tryout-${sec.dataset.pid}]:checked`)?.value; return v ? v === 'yes' : undefined; }
 function tryoutHtml(sec, offering, d) {
-  if (!asksTryout(sec, offering)) return '';
+  if (!offering?.tryout) return '';
   const m = matchOf(sec), v = readTryout(sec) ?? d.tryout, name = `tryout-${sec.dataset.pid}`;
-  const first = sec.querySelector('[name=first]').value.trim() || 'this player';
-  const stay = m?.tryoutTeam && !offering.tryout ? `stay with the ${esc(m.tryoutTeam)} in Minors` : `play in the ${esc(offering.name)}`;
-  return `<fieldset class="choice"><legend>Will ${esc(first)} try out for Majors? <span aria-hidden="true" style="color:var(--stitch)">*</span></legend>
-    <label><input type="radio" name="${name}" value="yes" required ${v === true ? 'checked' : ''}> <span>Yes — try out for Majors<span class="sub">${offering.tryout ? 'If not drafted to Majors, they play in the ' + esc(offering.name) + ' (Minors is for ages 10–12).' : 'If not drafted to Majors, they go into the Minors draft.'}</span></span></label>
-    <label><input type="radio" name="${name}" value="no" ${v === false ? 'checked' : ''}> <span>No — ${stay}</span></label></fieldset>`;
+  const first = esc(sec.querySelector('[name=first]').value.trim() || 'this player');
+  const star = ' <span aria-hidden="true" style="color:var(--stitch)">*</span>';
+  const opt = (val, label, sub) => `<label><input type="radio" name="${name}" value="${val}" required ${v === (val === 'yes') ? 'checked' : ''}> <span>${label}<span class="sub">${sub}</span></span></label>`;
+  const info = (title, text) => `<div class="tryinfo"><b>${title}</b><span>${text}</span></div>`;
+  if (offering.tryout === 'playup') return `<fieldset class="choice tryq"><legend>Will ${first} try out for Majors?${star}</legend>
+    ${opt('yes', 'Yes — try out for Majors', `If not drafted to Majors, they play in the ${esc(offering.name)}.`)}
+    ${opt('no', `No — play in the ${esc(offering.name)}`, 'No tryout needed.')}</fieldset>`;
+  const gc = groupCaseOf(sec, offering), ages = offering.min_age != null ? `${offering.min_age}–${offering.max_age}` : '';
+  if (gc === 'majors') return info(`Returning to Majors${m?.team ? ` — ${esc(m.team)}` : ''}`, `${first} stays on their Majors team. No tryout needed.`);
+  if (gc === 'minors') {
+    const team = m?.tryoutTeam ? `the ${esc(m.tryoutTeam)}` : 'their Minors team';
+    return `<fieldset class="choice tryq"><legend>Does ${first} want to try out for Majors?${star}</legend>
+      ${opt('no', `No — stay with ${team} in Minors`, 'No tryout needed.')}
+      ${opt('yes', 'Yes — try out for Majors', `If not drafted to a Majors team, ${first} goes back to ${team}.`)}</fieldset>`;
+  }
+  if (gc === 'rising') return info('Tryouts required', `Players moving up from the 9-Year-Old League go to tryouts${ages ? ` for ages ${ages}` : ''}.`)
+    + `<fieldset class="choice tryq"><legend>Which teams should ${first} be considered for?${star}</legend>
+      ${opt('yes', 'Majors and Minors', 'Eligible for the Majors draft; if not picked, they go into the Minors draft.')}
+      ${opt('no', 'Minors only', 'They go straight into the Minors draft.')}</fieldset>`;
+  return info('Tryouts required', `New players${ages ? ` ages ${ages}` : ''} go to tryouts. The draft places each player on a Majors or Minors team.`);
 }
 function readPlayer(sec) {
   const offeringId = sec.querySelector('[data-program]:checked')?.value || '';
@@ -382,9 +498,9 @@ function missing(sec) {
   if (!p.birthdate) out.push('birthdate');
   if (!p.gender) out.push('gender');
   if (sec._matches?.length && !sec._returning) out.push(`whether they played in ${C.campaign.year - 1}`);
-  if (!o) { if (p.birthdate) out.push('program'); return out; }
-  if (shutFor(o, matchOf(sec))) out.push(`a program with room (${o.name} is full)`);
-  if (asksTryout(sec, o) && p.tryout === undefined) out.push('the Majors tryout question');
+  if (!o) { if (p.birthdate) out.push('division'); return out; }
+  if (shutFor(o, matchOf(sec))) out.push(`a division with room (${o.name} is full)`);
+  if (asksTryout(sec, o) && p.tryout === undefined) out.push(groupCaseOf(sec, o) === 'rising' ? 'Majors or Minors only' : 'the Majors tryout question');
   for (const q of C.questions.filter((q) => q.scope === 'player' && q.required && applies(q, o.id) && !(q.new_only && isReturner(sec)))) {
     const v = p.answers[q.id];
     if (v === undefined || v === '' || v === false || (Array.isArray(v) && !v.length)) out.push(q.label.toLowerCase().replace(/[?:]$/, ''));
@@ -413,6 +529,20 @@ function drawLeft(sec, need) {
     el = document.createElement('p'); el.className = 'rleft'; banner.after(el);
   }
   el.textContent = `Just ${need.length === 1 ? 'one thing' : 'a few things'} left for ${sec.querySelector('[name=first]').value.trim()}: ${need.join(', ')}.`;
+}
+/* "Done" with something left: take them to the first unanswered field and point at it. */
+function showMissing(sec) {
+  sec.querySelectorAll('.missing').forEach((x) => x.classList.remove('missing'));
+  const blank = (el) => el.type === 'radio' || el.type === 'checkbox'
+    ? !sec.querySelector(`[name="${CSS.escape(el.name)}"]:checked`) : !String(el.value || '').trim();
+  const el = [...sec.querySelectorAll(':is(input,select,textarea):is([required],[data-req]),[name=gender]')].find((x) => !x.disabled && x.offsetParent && blank(x));
+  if (!el) return;
+  const box = el.closest('fieldset') || el.closest('label') || el;
+  box.classList.add('missing');
+  box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.focus({ preventScroll: true });
+  const clear = () => { box.classList.remove('missing'); box.removeEventListener('change', clear); box.removeEventListener('input', clear); };
+  box.addEventListener('change', clear); box.addEventListener('input', clear);
 }
 function renderHead(sec, n, p, cost) {
   const age = leagueAge(p.birthdate), m = matchOf(sec), need = missing(sec);
@@ -464,7 +594,7 @@ function renderSummary() {
     total += cost.total;
     if (cost.waits) waiting++;
     blocks.push(`<li class="sumplayer"><button type="button" class="sumname" data-open="${n}"><b>${esc(name)}</b><span>${cost.o ? (cost.waits ? '$0' : money(cost.total)) : '—'}</span></button>
-      <div class="sub">${cost.o ? esc(cost.o.name) : 'Pick a program'}${cost.waits ? ' · <span class="pill wait">waitlist</span>' : ''}${sec._need?.length && !cost.waits ? ' · <span class="needtxt">needs info</span>' : ''}</div>
+      <div class="sub">${cost.o ? esc(cost.o.name) : 'Pick a division'}${cost.waits ? ' · <span class="pill wait">waitlist</span>' : ''}${sec._need?.length && !cost.waits ? ' · <span class="needtxt">needs info</span>' : ''}</div>
       ${cost.lines.length ? `<ul class="sumlines">${cost.lines.map((l) => `<li><span>${esc(l.name)}</span><span>${money(l.cents)}</span></li>`).join('')}</ul>` : ''}</li>`);
   });
   const count = data.players.length;
@@ -557,7 +687,7 @@ async function showDone() {
       const inv = await call('GET', `/api/register/${encodeURIComponent(slug)}/invite/${encodeURIComponent(qs.get('invite'))}`);
       draft = { ...(draft || {}), guardian: { ...(draft?.guardian || {}), ...Object.fromEntries(Object.entries(inv.guardian).filter(([, v]) => v)) },
         players: inv.players.length ? inv.players : draft?.players || [] };
-      notes.push(inv.players.length ? 'Welcome back! We’ve filled in your returning players — check the details, pick their program and answer the rest.' : 'Your players are already registered — you can add another player below.');
+      notes.push(inv.players.length ? 'Welcome back! We’ve filled in your returning players — check the details, pick their division and answer the rest.' : 'Your players are already registered — you can add another player below.');
       $('notice').hidden = false; $('notice').innerHTML = notes.map(esc).join('<br>');
     } catch (e) { notes.push(e.message); $('notice').hidden = false; $('notice').innerHTML = notes.map(esc).join('<br>'); }
   }
@@ -590,7 +720,7 @@ async function showDone() {
     if (e.target.closest('[data-askret]')) { askReturning(sec); return; }
     if (e.target.matches('[data-done]')) {
       renderSummary();
-      if (sec._need.length) { sec.querySelector('.pmissing').textContent = `Still needed: ${sec._need.join(', ')}.`; return; }
+      if (sec._need.length) { sec.querySelector('.pmissing').textContent = `Still needed: ${sec._need.join(', ')}.`; showMissing(sec); return; }
       sec.querySelector('.pmissing').textContent = '';
       // On to the next player who still needs something, else close up so the family sees the list.
       openCard(cards().find((p) => p !== sec && p._need?.length) || null);
@@ -648,6 +778,12 @@ async function showDone() {
   });
   // A parent's email or phone (typed or corrected later) can be what unlocks the sibling offer.
   $('form').addEventListener('input', (e) => { if (e.target.matches('[name=gEmail],[name=gPhone]')) document.querySelectorAll('.player').forEach((sec) => lookupLater(lookupSiblings, sec, 600)); });
+  // Parent first: once they've typed their email, see if it's a returning family.
+  $('form').elements.gEmail.addEventListener('change', famLookup);
+  $('famPanel').addEventListener('click', (e) => { const b = e.target.closest('[data-fam]'); if (b) famAction(b.dataset.fam); });
+  $('famPanel').addEventListener('change', (e) => { const m = /^fk-(.+)$/.exec(e.target.name || ''); if (m) { FAM.pick[m[1]] = e.target.value; drawFam(); } });
+  $('famPanel').addEventListener('keydown', (e) => { if (e.target.id === 'famCode' && e.key === 'Enter') { e.preventDefault(); famAction('verify'); } });
+  $('famPanel').addEventListener('input', (e) => { if (e.target.id === 'famCode' && e.target.value.replace(/\D/g, '').length === 6) famAction('verify'); });
   $('form').addEventListener('input', (e) => { if (e.target.name === 'payplan') payPlan = e.target.value === 'plan'; renderSummary(); });
   $('form').onsubmit = async (e) => {
     e.preventDefault();

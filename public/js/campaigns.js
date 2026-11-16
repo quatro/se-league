@@ -24,7 +24,7 @@ const STATUS = {
 };
 const KINDS = {
   spring: ['Spring league', 'The annual league: returning players hold their seats, protection keeps room for them, and interest checks ask who’s coming back.'],
-  standard: ['Simple sign-up', 'Summer, fall ball, camps: programs, fees, spots and a waitlist — no returner tracking.'],
+  standard: ['Simple sign-up', 'Summer, fall ball, camps: divisions, fees, spots and a waitlist — no returner tracking.'],
 };
 const PHASE = { open: ['Open to everyone', 'good'], protected: ['Protecting returners', 'meh'], full: ['Full', 'bad'], waitlist: ['Waitlist only', 'meh'] };
 const OFFER_LABEL = { 24: '24 hours', 48: '48 hours', 72: '3 days', 168: '1 week' };
@@ -45,7 +45,7 @@ async function loadCampaigns() {
 
 /* ---------- reading helpers ---------- */
 const progName = (id) => CS.data.offerings.find((o) => o.id === id)?.name ?? '?';
-const appliesTo = (ids) => (!ids.length || ids.length === CS.data.offerings.length ? 'All programs' : ids.map(progName).join(', '));
+const appliesTo = (ids) => (!ids.length || ids.length === CS.data.offerings.length ? 'All divisions' : ids.map(progName).join(', '));
 // The program's own limit on new players, in plain words (division seats and expected returners don't enter into it).
 function spotLine(o) {
   const after = o.when_full === 'close' ? 'closed to new players' : 'new players join the waitlist';
@@ -88,7 +88,7 @@ function renderCampaigns() {
   const qOn = d.questions.filter((q) => q.active).length, iOn = d.items.filter((i) => i.active).length, progOn = d.offerings.filter((o) => o.reg_mode !== 'closed').length;
   const waiting = d.waitlist.reduce((a, w) => a + w.players.length, 0);
   const plan = c.plan_installments >= 2 && c.plan_final_date, planWorks = plan && planPreview(sampleTotal(), c.plan_installments, c.plan_final_date);
-  const SECTIONS = [['details', 'Details', ''], ['programs', 'Programs', progOn], ['fees', 'Fees', iOn], ['questions', 'Questions', qOn], ['plan', 'Payment plan', plan ? (planWorks ? 'On' : '!') : 'Off'],
+  const SECTIONS = [['details', 'Details', ''], ['programs', 'Divisions', progOn], ['fees', 'Fees', iOn], ['questions', 'Questions', qOn], ['plan', 'Payment plan', plan ? (planWorks ? 'On' : '!') : 'Off'],
     ['waitlist', 'Waitlist', waiting], ['orders', 'Orders', d.orders.filter((o) => o.status === 'paid').length]];
   if (!SECTIONS.some(([k]) => k === CS.section)) CS.section = 'details';
 
@@ -123,7 +123,7 @@ function sectionHtml(s) {
   const d = CS.data, c = d.campaign;
   if (s === 'details') {
     const dl = (k, v) => `<div class="kv"><dt>${k}</dt><dd>${v}</dd></div>`;
-    const season = c.season_id ? S.st.seasons.find((x) => x.id === c.season_id)?.year ?? c.season_id : 'None — standalone programs';
+    const season = c.season_id ? S.st.seasons.find((x) => x.id === c.season_id)?.year ?? c.season_id : 'None — standalone registration';
     return `<div class="panel"><div class="hd"><h2>Details</h2><button class="btn" data-act="details">Edit details</button></div><div class="bd">
       <dl class="kvs">
         ${dl('Name', esc(c.name))}
@@ -137,10 +137,10 @@ function sectionHtml(s) {
       </dl></div></div>`;
   }
   if (s === 'programs') {
-    return `<div class="panel"><div class="hd"><h2>Programs</h2><div class="row">${c.season_id ? '<button class="linkbtn" data-act="fromSeason">Add the season’s divisions</button>' : ''}<button class="btn" data-act="addProg">Add program</button></div></div><div class="bd">
-      <p class="note">What a family can register each player for. Families only see the programs their player’s league age fits.</p>
+    return `<div class="panel"><div class="hd"><h2>Divisions</h2><div class="row">${c.season_id ? '<button class="linkbtn" data-act="fromSeason">Add the season’s divisions</button>' : ''}<button class="btn" data-act="addProg">Add division</button></div></div><div class="bd">
+      <p class="note">What a family can register each player for. Families only see the divisions their player’s league age fits.</p>
       <details class="explain"><summary>How spots and the waitlist work</summary>
-        <p>Each program has its own number of spots for <b>new</b> players, and its own rule for when they’re gone: start a free waitlist, or stop taking registrations. Returning players expected back in that division always get in and don’t use a spot. In the spring league, <b>returner protection</b> watches each division’s buffer and sends new players to the waitlist when it gets tight. People on the waitlist count as already in line, so if you add spots they go to the families waiting (offer them from the Waitlist section), not to the next registration.</p></details>
+        <p>Each division has its own number of spots for <b>new</b> players, and its own rule for when they’re gone: start a free waitlist, or stop taking registrations. Returning players expected back in that division always get in and don’t use a spot. In the spring league, <b>returner protection</b> watches each division’s buffer and sends new players to the waitlist when it gets tight. People on the waitlist count as already in line, so if you add spots they go to the families waiting (offer them from the Waitlist section), not to the next registration.</p></details>
       <ul class="lrows">${d.offerings.map((o) => {
         const sl = spotLine(o), g = o.guard, ph = PHASE[o.phase], div = o.division_id ? S.st.divisions.find((x) => x.id === o.division_id)?.name : null;
         const ages = o.min_age != null || o.max_age != null ? `Ages ${o.min_age ?? '?'}${o.max_age !== o.min_age ? `–${o.max_age ?? '?'}` : ''}` : 'Any age';
@@ -153,8 +153,8 @@ function sectionHtml(s) {
           <div class="lstat"><div class="seat ${sl.cls}">${sl.text}</div>${spotMeter(o)}
             <div class="regcounts"><span><b>${o.new_registered}</b> new</span><span><b>${o.returning_registered}</b> returning</span>${o.waitlisted ? `<span class="w"><b>${o.waitlisted}</b> waiting</span>` : ''}${o.in_checkout ? `<span><b>${o.in_checkout}</b> checking out</span>` : ''}</div></div>
           <div class="lact"><button class="btn" data-act="editProg" data-id="${esc(o.id)}">Edit</button></div></li>`;
-      }).join('') || '<li class="note">No programs yet — add one, or add the season’s divisions.</li>'}</ul>
-      ${c.season_id && c.season_id !== S.sid ? `<p class="note">Switch the season picker (top right) to ${esc(c.season_id)} to tie programs to its divisions.</p>` : ''}
+      }).join('') || '<li class="note">No divisions yet — add one, or add the season’s divisions.</li>'}</ul>
+      ${c.season_id && c.season_id !== S.sid ? `<p class="note">Switch the season picker (top right) to ${esc(c.season_id)} to tie these to its season divisions.</p>` : ''}
     </div></div>`;
   }
   if (s === 'fees') {
@@ -299,7 +299,7 @@ function detailsDialog() {
   editDialog(`<form class="dlg"><h2>Registration details</h2>
     ${fld('Name', `<input type="text" name="name" value="${esc(c.name)}" required>`)}
     ${fld('Status', `<select name="status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${c.status === k ? 'selected' : ''}>${v.label} — ${v.line}</option>`).join('')}</select>`)}
-    ${fld('Season', `<select name="season"><option value="">None — standalone programs (summer team, fall league)</option>${S.st.seasons.map((s) => `<option value="${esc(s.id)}" ${s.id === c.season_id ? 'selected' : ''}>${s.year}</option>`).join('')}</select>`)}
+    ${fld('Season', `<select name="season"><option value="">None — standalone (summer team, fall league)</option>${S.st.seasons.map((s) => `<option value="${esc(s.id)}" ${s.id === c.season_id ? 'selected' : ''}>${s.year}</option>`).join('')}</select>`)}
     ${fld('Type', `<select name="kind">${Object.entries(KINDS).map(([k, [l]]) => `<option value="${k}" ${c.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`, 'Spring league turns on returner seats, protection and interest checks.')}
     ${fld('Web address', `<div class="prefix"><span>/register/</span><input type="text" name="slug" value="${esc(c.slug)}" required></div>`, 'Changing it breaks links you’ve already sent.')}
     <div class="fld2">${fld('Opens', `<input type="datetime-local" name="opens" value="${esc(local(c.opens_at))}">`, 'Optional')}${fld('Closes', `<input type="datetime-local" name="closes" value="${esc(local(c.closes_at))}">`, 'Optional')}</div>
@@ -313,10 +313,10 @@ function detailsDialog() {
 
 function programDialog(o) {
   const c = CS.data.campaign, divs = c.season_id === S.sid ? S.st.divisions : [];
-  editDialog(`<form class="dlg"><h2>${o.id ? esc(o.name) : 'New program'}</h2>
+  editDialog(`<form class="dlg"><h2>${o.id ? esc(o.name) : 'New division'}</h2>
     ${fld('Name', `<input type="text" name="name" value="${esc(o.name)}" required>`)}
     ${fld('Description', `<input type="text" name="description" value="${esc(o.description)}" placeholder="Optional — shown under the name">`)}
-    ${fld('Players go to', `<select name="division"><option value="">No division — standalone</option>${divs.map((x) => `<option value="${esc(x.id)}" ${x.id === o.division_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}${o.division_id && !divs.some((x) => x.id === o.division_id) ? `<option value="${esc(o.division_id)}" selected>${esc(o.division_id)}</option>` : ''}</select>`, 'Where registered players are placed for the season. It doesn’t limit signups — spots below do.')}
+    ${fld('Players go to', `<select name="division"><option value="">Nowhere — standalone</option>${divs.map((x) => `<option value="${esc(x.id)}" ${x.id === o.division_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}${o.division_id && !divs.some((x) => x.id === o.division_id) ? `<option value="${esc(o.division_id)}" selected>${esc(o.division_id)}</option>` : ''}</select>`, 'Where registered players are placed for the season. It doesn’t limit signups — spots below do.')}
     <div class="fld2">${fld('Youngest (league age)', `<input type="number" name="min" value="${esc(o.min_age ?? '')}" min="3" max="19">`)}${fld('Oldest', `<input type="number" name="max" value="${esc(o.max_age ?? '')}" min="3" max="19">`)}</div>
     <fieldset class="fld radios"><legend>Registration</legend>${Object.entries(REG_MODES).map(([k, [l, h]]) => `<label class="chk"><input type="radio" name="mode" value="${k}" ${o.reg_mode === k ? 'checked' : ''}> <span><b>${l}</b> <small>${h}</small></span></label>`).join('')}</fieldset>
     ${CS.data.campaign.kind === 'spring' ? `<div class="spotbox" data-show="open">
@@ -328,13 +328,13 @@ function programDialog(o) {
       ${fld('Spots for new players', `<input type="number" name="cap" value="${esc(o.capacity ?? '')}" min="0" placeholder="No limit" style="max-width:160px">`, `Leave blank for no limit. Returning players expected back always get in and don’t use a spot.${o.id ? ` Taken now: ${o.taken} (${o.new_registered} registered${o.waitlisted ? `, ${o.waitlisted} waiting` : ''}).` : ''}`)}
       <fieldset class="fld radios"><legend>When the spots are gone</legend>
         <label class="chk"><input type="radio" name="whenfull" value="waitlist" ${o.when_full !== 'close' ? 'checked' : ''}> <span><b>Start a waitlist</b> <small>New players sign up free and wait in line; you offer spots from the Waitlist section.</small></span></label>
-        <label class="chk"><input type="radio" name="whenfull" value="close" ${o.when_full === 'close' ? 'checked' : ''}> <span><b>Stop taking registrations</b> <small>Families see that this program is full.</small></span></label></fieldset>
+        <label class="chk"><input type="radio" name="whenfull" value="close" ${o.when_full === 'close' ? 'checked' : ''}> <span><b>Stop taking registrations</b> <small>Families see that this division is full.</small></span></label></fieldset>
     </div>
-    ${footer(o.id && 'Delete program')}</form>`, (f) => {
+    ${footer(o.id && 'Delete division')}</form>`, (f) => {
     const v = (n) => f.elements[n].value, num = (n) => (v(n) === '' ? null : parseInt(v(n), 10));
     return act(o.id ? 'PATCH' : 'POST', CA(o.id ? `/programs/${encodeURIComponent(o.id)}` : '/programs'), { name: v('name'), description: v('description'), division_id: v('division') || null, min_age: num('min'), max_age: num('max'), capacity: num('cap'), reg_mode: f.querySelector('[name=mode]:checked').value, when_full: f.querySelector('[name=whenfull]:checked').value,
-      ...(f.elements.protect ? { protect_at: f.elements.protect.checked ? Math.max(0, parseInt(v('protectAt'), 10) || 0) : null } : {}) }, o.id ? 'Saved' : 'Program added');
-  }, () => act('DELETE', CA(`/programs/${encodeURIComponent(o.id)}`), undefined, 'Program deleted'));
+      ...(f.elements.protect ? { protect_at: f.elements.protect.checked ? Math.max(0, parseInt(v('protectAt'), 10) || 0) : null } : {}) }, o.id ? 'Saved' : 'Division added');
+  }, () => act('DELETE', CA(`/programs/${encodeURIComponent(o.id)}`), undefined, 'Division deleted'));
   // Spots only matter while the program is open.
   const f = $('dlg').querySelector('form'), sync = () => {
     const open = f.querySelector('[name=mode]:checked').value === 'open';
@@ -419,8 +419,8 @@ function newDialog() {
   openDialog(`<form class="dlg" id="ncf"><h2>New registration</h2>
     ${fld('Name', '<input type="text" id="ncName" required placeholder="e.g. 2027 Spring">')}
     <fieldset class="fld radios"><legend>Type</legend>${Object.entries(KINDS).map(([k, [l, h]], i) => `<label class="chk"><input type="radio" name="nckind" value="${k}" ${i ? '' : 'checked'}> <span><b>${l}</b> <small>${h}</small></span></label>`).join('')}</fieldset>
-    ${fld('Season', `<select id="ncSeason"><option value="">None — standalone programs (summer team, fall league)</option>${S.st.seasons.map((s) => `<option value="${esc(s.id)}" ${s.id === S.st.current ? 'selected' : ''}>${s.year}</option>`).join('')}</select>`)}
-    <p class="note">It starts as a draft with the season’s divisions as programs, a $200 registration fee, the $5 LFUCG fee, an optional $60 value card, and starter questions on experience, volunteering and the waiver — change anything before opening it.</p>
+    ${fld('Season', `<select id="ncSeason"><option value="">None — standalone (summer team, fall league)</option>${S.st.seasons.map((s) => `<option value="${esc(s.id)}" ${s.id === S.st.current ? 'selected' : ''}>${s.year}</option>`).join('')}</select>`)}
+    <p class="note">It starts as a draft with the season’s divisions, a $200 registration fee, the $5 LFUCG fee, an optional $60 value card, and starter questions on experience, volunteering and the waiver — change anything before opening it.</p>
     <p class="err-text" id="ncErr"></p>
     <div class="row dlgfoot"><button class="btn primary" type="submit">Create</button><button class="btn" data-close>Cancel</button></div></form>`, (dl) => {
     dl.querySelector('#ncf').onsubmit = async (e) => {
@@ -437,7 +437,7 @@ function statusDialog(to) {
   openDialog(`<form class="dlg"><h2>${opening ? `Open ${esc(c.name)}?` : `Close ${esc(c.name)}?`}</h2>
     ${opening ? `<p>Families will be able to register and pay at <b>${esc(url.replace(/^https?:\/\//, ''))}</b>.</p>
       ${d.stripe === 'test' ? '<p class="warn-text">Stripe is still in test mode — families can’t actually pay until the league switches to live keys.</p>' : ''}
-      ${!d.offerings.some((o) => o.reg_mode !== 'closed') ? '<p class="err-text">No programs are open yet.</p>' : ''}`
+      ${!d.offerings.some((o) => o.reg_mode !== 'closed') ? '<p class="err-text">No divisions are open yet.</p>' : ''}`
       : '<p>Families will see that registration is closed. Waitlist offers you’ve already sent keep working.</p>'}
     <div class="row dlgfoot"><button class="btn primary" type="submit">${opening ? 'Open registration' : 'Close registration'}</button><button class="btn" data-close>Cancel</button></div></form>`, (dl) => {
     dl.querySelector('form').onsubmit = async (e) => {

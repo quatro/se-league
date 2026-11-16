@@ -400,9 +400,9 @@ export function moveEnrollment(id: string, divisionId: string | null, actor: str
 
 /**
  * Trying out for the group's first draft (Majors). A returner with a team
- * (last year's Minors) gives up that team to try out — if they aren't drafted
- * they go into the Minors draft, not back to the old team. Switching the
- * tryout off again before any pick puts them back on it.
+ * (last year's Minors) leaves it while the Majors draft is open; if they
+ * aren't drafted, closing that draft puts them back on it. Switching the
+ * tryout off again before any pick puts them back on it too.
  */
 export function setTryout(id: string, on: boolean, actor: string) {
   const e = enrollment(id)

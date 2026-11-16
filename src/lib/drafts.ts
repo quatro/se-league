@@ -83,8 +83,8 @@ export function draftState(id: string, isAdmin: boolean) {
       const hide = r.format === 'blind' && kind === 'pool' && !pickedIds.has(p.id)
       return {
         id: p.id, kind, teamId: kind === 'returning' ? p.team_id : null, number: numbers.get(p.id) ?? null,
-        // A returner trying out from another division's team (a Minors returner): the team they gave up, and
-        // whether that's their answer or only assumed because they haven't registered yet.
+        // A returner trying out from another division's team (a Minors returner): the team they go back to if
+        // not drafted, and whether that's their answer or only assumed because they haven't registered yet.
         ...(kind === 'pool' && p.tryout && p.returning_team_id ? (() => {
           const t = team(p.returning_team_id)
           return t && t.division_id !== b.d.id ? { from: { division: division(t.division_id)?.name ?? '', team: t.name, assumed: p.status !== 'Registered' } } : {}
@@ -252,27 +252,37 @@ export function deleteDraft(id: string, actor: string) {
 }
 
 /**
- * Close a draft. Kids still in its pool move to the next draft (Majors →
- * Minors) — refreshPools does that, since a closed draft is skipped.
+ * Close a draft. A Minors returner who tried out and wasn't picked goes back to their own Minors
+ * team; everyone else still in the pool moves to the next draft (Majors → Minors) — refreshPools does
+ * that, since a closed draft is skipped.
  */
 export function closeDraft(id: string, actor: string) {
   const r = mustDraft(id)
   if (r.status === 'closed') throw new UserError('Already closed')
-  const left = (db.prepare(`SELECT COUNT(*) n FROM enrollments WHERE draft_id = ? AND status NOT IN ('Not returning','Withdrawn')
-    AND id NOT IN (SELECT enrollment_id FROM picks)`).get(id) as { n: number }).n
+  const unpicked = `draft_id = ? AND status NOT IN ('Not returning','Withdrawn') AND id NOT IN (SELECT enrollment_id FROM picks)`
+  const left = (db.prepare(`SELECT COUNT(*) n FROM enrollments WHERE ${unpicked}`).get(id) as { n: number }).n
+  const back = db.prepare(`UPDATE enrollments SET team_id = returning_team_id, updated_at = datetime('now') WHERE ${unpicked} AND ${TRIED_FROM_TEAM}`).run(id, r.division_id).changes
   db.prepare(`UPDATE drafts SET status = 'closed', closed_at = datetime('now') WHERE id = ?`).run(id)
   refreshPools(r.season_id)
   const next = r.next_id ? draft(r.next_id) : undefined
-  audit(actor, 'draft_closed', r.season_id, null, { draft: r.key, undrafted: left, movedTo: next?.key ?? null })
+  audit(actor, 'draft_closed', r.season_id, null, { draft: r.key, undrafted: left, backToTeam: back, movedTo: next?.key ?? null })
   changed()
-  return { undrafted: left, next: next ? division(next.division_id)?.name ?? next.key : null }
+  return { undrafted: left - back, backToTeam: back, next: next ? division(next.division_id)?.name ?? next.key : null }
 }
+/** Tried out from a team in their own (other) division — a Minors returner: not drafted, that team is still theirs. */
+const TRIED_FROM_TEAM = `tryout = 1 AND returning_team_id IS NOT NULL AND division_id <> ?
+  AND returning_team_id IN (SELECT t.id FROM teams t WHERE t.division_id = enrollments.division_id)`
 export function reopenDraft(id: string, actor: string) {
   const r = mustDraft(id)
   if (r.status === 'open') throw new UserError('Already open')
   const next = r.next_id ? draft(r.next_id) : undefined
   if (next && picksOf(next.id).length) throw new UserError(`The ${division(next.division_id)?.name} draft has already started — clear its picks before reopening this one`)
   db.prepare(`UPDATE drafts SET status = 'open', closed_at = NULL WHERE id = ?`).run(id)
+  // Minors returners sent back to their teams when it closed are in this draft's pool again.
+  const g = division(r.division_id)?.group_key
+  if (g) db.prepare(`UPDATE enrollments SET team_id = NULL, updated_at = datetime('now') WHERE season_id = ? AND team_id = returning_team_id
+    AND id NOT IN (SELECT enrollment_id FROM picks) AND division_id IN (SELECT id FROM divisions WHERE season_id = ? AND group_key = ?) AND ${TRIED_FROM_TEAM}`)
+    .run(r.season_id, r.season_id, g, r.division_id)
   refreshPools(r.season_id)
   audit(actor, 'draft_reopened', r.season_id, null, { draft: r.key })
   changed()

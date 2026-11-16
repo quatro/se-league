@@ -197,7 +197,8 @@ admin.delete('/drafts/:id/picks/:slot', wrap((req) => { D.removePick(p(req, 'id'
 admin.put('/drafts/:id/picks/:slot', wrap((req) => { D.replacePick(p(req, 'id'), p(req, 'slot'), z.object({ playerId: z.string() }).parse(req.body).playerId, actor(req)) }))
 admin.post('/drafts/:id/close', wrap((req) => {
   const r = D.closeDraft(p(req, 'id'), actor(req))
-  return { ...r, message: r.next ? `Draft closed — ${r.undrafted} undrafted ${r.undrafted === 1 ? 'kid' : 'kids'} moved to the ${r.next} draft` : 'Draft closed' }
+  return { ...r, message: [r.next ? `Draft closed — ${r.undrafted} undrafted ${r.undrafted === 1 ? 'kid' : 'kids'} moved to the ${r.next} draft` : 'Draft closed',
+    r.backToTeam ? `${r.backToTeam} back on their Minors ${r.backToTeam === 1 ? 'team' : 'teams'}` : ''].filter(Boolean).join('; ') }
 }))
 admin.post('/drafts/:id/reopen', wrap((req) => { D.reopenDraft(p(req, 'id'), actor(req)) }))
 admin.post('/drafts/:id/numbers', wrap((req) => { const r = D.assignNumbers(p(req, 'id'), actor(req)); return { ...r, message: `Numbers ${r.from}–${r.to} handed out` } }))

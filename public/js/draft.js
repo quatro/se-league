@@ -263,9 +263,10 @@ function renderSetup() {
   const sibs = st.picks.filter((x) => x.sibling);
   $('sibList').innerHTML = sibs.map((x) => `<li>${esc(st.players.find((p) => p.id === x.player)?.name)} — ${esc(team(x.team)?.name)}, round ${x.round} (pick #${x.n})</li>`).join('');
   $('closeDraft').hidden = d.status === 'closed'; $('reopenDraft').hidden = d.status !== 'closed';
-  const left = poolPlayers().filter((p) => !takenIds().has(p.id) && !OUT.includes(p.status)).length;
+  const rest = poolPlayers().filter((p) => !takenIds().has(p.id) && !OUT.includes(p.status));
+  const back = rest.filter((p) => p.from).length, left = rest.length - back;
   $('closeNote').innerHTML = d.status === 'closed' ? 'Reopening is only possible until the next draft makes its first pick.'
-    : `Closing ends this draft${d.next ? ` and moves the ${left} undrafted ${left === 1 ? 'player' : 'players'} to the <b>${esc(d.next)}</b> draft` : ''}.`;
+    : `Closing ends this draft${d.next ? ` and moves the ${left} undrafted ${left === 1 ? 'player' : 'players'} to the <b>${esc(d.next)}</b> draft` : ''}${back ? `; ${back} undrafted Minors ${back === 1 ? 'returner goes' : 'returners go'} back to their own team` : ''}.`;
 }
 const saveDraft = (b, msg = 'Saved') => act('PUT', `/api/admin/divisions/${encodeURIComponent(S.st.draft.divisionId)}/draft`, b, msg);
 $('format').onchange = (e) => saveDraft({ format: e.target.value });

@@ -49,7 +49,7 @@ export const order = (id: string) => db.prepare('SELECT * FROM orders WHERE id =
 const players = (orderId: string) => db.prepare('SELECT * FROM order_players WHERE order_id = ?').all(orderId) as OrderPlayer[]
 
 /** Season used for league ages: the campaign's season, else a stand-in for the current year. */
-function ageSeason(c: Campaign): Season {
+export function ageSeason(c: Campaign): Season {
   if (c.season_id) { const s = season(c.season_id); if (s) return s }
   const y = new Date().getFullYear()
   return { id: String(y), year: y, status: 'planning', age_cutoff: '04-30', warn_at: 4, rolled_from: null, notes: '' }
@@ -113,7 +113,7 @@ export function publicCampaign(slugStr: string, preview = false) {
     offerings: offerings(c.id).filter((o) => o.reg_mode !== 'closed').map((o) => {
       const a = availability(o)
       return { id: o.id, name: o.name, description: o.description, min_age: o.min_age, max_age: o.max_age, full: a.full, waitlist: !shutFor(o, a), protected: a.phase === 'protected', left: a.open != null && a.open <= 10 ? Math.max(0, a.open) : null,
-        tryout: offeringAsksTryout(o) }
+        tryout: offeringTryout(o) }
     }),
     items: items(c.id).filter((i) => i.active).map((i) => ({ id: i.id, name: i.name, description: i.description, price_cents: i.price_cents, required: !!i.required, max_qty: i.max_qty, offering_ids: J<string[]>(i.offering_ids, []) })),
     questions: questions(c.id).filter((q) => q.active).map((q) => ({ id: q.id, scope: q.scope, label: q.label, help: q.help, type: q.type, options: J<string[]>(q.options, []), required: !!q.required, offering_ids: J<string[]>(q.offering_ids, []), new_only: !!q.new_only })),
@@ -148,7 +148,7 @@ export function returningMatches(c: Campaign, first: string, last: string, dob: 
     id: r.id, name: r.name, year: prior.year, division: r.division, team: r.team, suggestOfferingId: suggestedOffering(c, r.id),
     // The program where a seat is already held for them: full or not, they register and pay there.
     seatOfferingId: offerings(c.id).find((o) => o.active && holdsSeatIn(c, r.id, o))?.id ?? null,
-    tryoutTeam: tryoutTeam(c, r.id), dobDiffers: false,
+    tryoutTeam: tryoutTeam(c, r.id), groupCase: groupCase(c, r.id), dobDiffers: false,
   })
   // 1. Exact: the full name, and the birthdate (or, with none on file, an age that fits).
   const exact = rows.filter((r) => r.name_key === fullKey).filter((r) => {
@@ -165,7 +165,7 @@ export function returningMatches(c: Campaign, first: string, last: string, dob: 
   //    say nothing about their team or program, since the birthdate didn't check out; the office sees the
   //    mismatch when they register.
   return rows.filter((r) => r.name_key === fullKey && r.birthdate && dobClose(r.birthdate, born))
-    .slice(0, 1).map((r) => ({ id: r.id, name: r.name, year: prior.year, division: null, team: null, suggestOfferingId: null, seatOfferingId: null, tryoutTeam: null, dobDiffers: true }))
+    .slice(0, 1).map((r) => ({ id: r.id, name: r.name, year: prior.year, division: null, team: null, suggestOfferingId: null, seatOfferingId: null, tryoutTeam: null, groupCase: groupCase(c, r.id), dobDiffers: true }))
 }
 
 /** A birthdate that's probably a slip: one or two parts off by a little, or the day and month swapped. */
@@ -261,10 +261,30 @@ export function tryoutTeam(c: Campaign, kidId: string): string | null {
   return team(e.returning_team_id)?.name ?? null
 }
 
-/** A program whose players can play up (the 9-Year-Old League): everyone registering for it is asked about Majors tryouts. */
-function offeringAsksTryout(o: Offering): boolean {
+/** What the form shows about tryouts for this division: 'playup' (the 9s), 'group' (Major/Minor), or nothing. */
+function offeringTryout(o: Offering): 'playup' | 'group' | null {
   const d = o.division_id ? division(o.division_id) : undefined
-  return !!d && !d.group_key && canTryOut(d)
+  return !d ? null : d.group_key ? (isDraftOnly(d) ? null : 'group') : canTryOut(d) ? 'playup' : null
+}
+
+/**
+ * Where a known player stands in the Majors/Minors group this season:
+ *  - 'majors': back on their Majors team — no tryout, nothing to choose.
+ *  - 'minors': back on their Minors team — stay on it, or try out for Majors (and return to it if not drafted).
+ *  - 'rising': moving up from the 9-Year-Old League — tryouts required; Majors and Minors, or Minors only.
+ *  - null: not a returner to the group (a new 10–12 player tries out, no choice).
+ */
+export type GroupCase = 'majors' | 'minors' | 'rising' | null
+export function groupCase(c: Campaign, kidId: string): GroupCase {
+  if (!c.season_id) return null
+  const e = db.prepare(`SELECT e.division_id, e.returning_team_id FROM enrollments e WHERE e.season_id = ? AND e.kid_id = ?`).get(c.season_id, kidId) as { division_id: string | null; returning_team_id: string | null } | undefined
+  const d = e?.division_id ? division(e.division_id) : undefined
+  if (d?.group_key) return isDraftOnly(d) ? (e!.returning_team_id ? 'majors' : null) : e!.returning_team_id ? 'minors' : 'rising'
+  // Not rolled over: last season in the division just below the group (the 9s) still counts as moving up.
+  const s = season(c.season_id), prior = s ? db.prepare('SELECT id FROM seasons WHERE year = ?').get(s.year - 1) as { id: string } | undefined : undefined
+  const pd = prior ? (db.prepare('SELECT eff_division_id FROM placements WHERE season_id = ? AND kid_id = ?').get(prior.id, kidId) as { eff_division_id: string | null } | undefined)?.eff_division_id : null
+  const pdiv = pd ? division(pd) : undefined
+  return pdiv && !pdiv.group_key && canTryOut(pdiv) ? 'rising' : null
 }
 
 /** A returner expected back in this program's division (or Majors+Minors group) already holds a seat there: it's theirs to claim. */
@@ -348,7 +368,7 @@ export function programsFromSeason(campaignId: string, actor: string): number {
     const name = members.length > 1 ? members.slice().reverse().map((x) => x.name.replace(/s$/, '')).join('/') : d.name
     const min = Math.min(...members.map((x) => x.min_age ?? 0)), max = Math.max(...members.map((x) => x.max_age ?? 99))
     db.prepare('INSERT INTO offerings (id, campaign_id, division_id, name, description, min_age, max_age, sort) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(uid(), c.id, d.id, name, members.length > 1 ? 'Tryouts and the draft decide which league each player is placed in.' : '', min || null, max === 99 ? null : max, ++sort)
+      .run(uid(), c.id, d.id, name, '', min || null, max === 99 ? null : max, ++sort)
     n++
   }
   audit(actor, 'campaign_programs_added', c.season_id, null, { campaign: c.name, added: n })
@@ -359,7 +379,7 @@ export function programsFromSeason(campaignId: string, actor: string): number {
 export interface OfferingInput { name: string; description?: string; division_id?: string | null; min_age?: number | null; max_age?: number | null; capacity?: number | null; reg_mode?: RegMode; when_full?: WhenFull; protect_at?: number | null; sort?: number }
 export function saveOffering(campaignId: string, id: string | null, p: OfferingInput, actor: string) {
   const c = mustCampaign(campaignId)
-  if (!p.name.trim()) throw new UserError('Program needs a name')
+  if (!p.name.trim()) throw new UserError('Division needs a name')
   if (p.division_id && !divisions(c.season_id ?? '').some((d) => d.id === p.division_id)) throw new UserError('That division isn’t in this registration’s season')
   const was = id ? (db.prepare('SELECT reg_mode, sort, when_full, protect_at FROM offerings WHERE id = ?').get(id) as { reg_mode: RegMode; sort: number; when_full: WhenFull; protect_at: number | null } | undefined) : undefined
   if (p.capacity != null && p.capacity < 0) throw new UserError('Spots can’t be negative')
@@ -372,7 +392,7 @@ export function saveOffering(campaignId: string, id: string | null, p: OfferingI
   changed()
 }
 export function deleteOffering(id: string, actor: string) {
-  if (db.prepare('SELECT 1 FROM order_players WHERE offering_id = ?').get(id)) throw new UserError('Families have registered for this program — turn it off instead')
+  if (db.prepare('SELECT 1 FROM order_players WHERE offering_id = ?').get(id)) throw new UserError('Families have registered for this division — turn it off instead')
   db.prepare('DELETE FROM offerings WHERE id = ?').run(id)
   audit(actor, 'campaign_program_deleted', null, null, { id })
   changed()
@@ -474,7 +494,7 @@ export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote
     if (seen.has(key)) throw new UserError(`${name} is listed twice`)
     seen.add(key)
     const o = offs.find((x) => x.id === p.offeringId)
-    if (!o) throw new UserError(`${name}: pick a program`)
+    if (!o) throw new UserError(`${name}: pick a division`)
     const age = leagueAge(dob, s.year, s.age_cutoff)
     if (!fitsAge({ min_age: o.min_age, max_age: o.max_age }, age)) throw new UserError(`${name} is league age ${age} for ${s.year}; ${o.name} is for ages ${o.min_age ?? '?'}–${o.max_age ?? '?'}`)
     // Last season's player: the family has to say whether it's them, and can only pick one we offered.
@@ -513,11 +533,15 @@ export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote
     // A confirmed returner already told us about their baseball last season.
     const returner = !!returning && returning !== 'new'
     for (const q of qs.filter((q) => q.scope === 'player' && appliesTo(q.offering_ids, o.id) && !(q.new_only && returner))) { const v = checkAnswer(q, p.answers?.[q.id], name); if (v !== undefined) answers[q.id] = v }
-    // A Minors returner registering for the shared program, and every 9, says whether they're trying out for Majors.
-    if ((returner && holdsSeatIn(c, returning, o) && tryoutTeam(c, returning)) || offeringAsksTryout(o)) {
-      if (typeof p.tryout !== 'boolean') throw new UserError(`${name}: say whether they’ll try out for Majors`)
+    // Majors tryouts. Every 9 chooses. In Major/Minor: a Majors returner stays put; a Minors returner chooses
+    // (stay on their team, or try out and come back to it if not drafted); a player moving up from the 9s
+    // chooses Majors-and-Minors or Minors only; a player new to the league tries out — no choice.
+    const tc = offeringTryout(o)
+    const gc = tc === 'group' && returner ? groupCase(c, returning) : null
+    if (tc === 'playup' || gc === 'minors' || gc === 'rising') {
+      if (typeof p.tryout !== 'boolean') throw new UserError(`${name}: ${gc === 'rising' ? 'say whether they want to be considered for Majors' : 'say whether they’ll try out for Majors'}`)
       answers[TRYOUT_ANSWER] = p.tryout
-    }
+    } else if (tc === 'group' && !gc) answers[TRYOUT_ANSWER] = true
     out.push({ input: { ...p, birthdate: dob }, returning, offering: o, age, waitlisted, heldSeat: ownSeat, answers, lines })
   }
   const total = out.filter((p) => !p.waitlisted).reduce((a, p) => a + p.lines.reduce((b, l) => b + l.item.price_cents * l.qty, 0), 0)
@@ -618,7 +642,7 @@ function place(o: Order, p: OrderPlayer, c: Campaign, status: 'Registered' | 'Wa
   const tryout = J<Record<string, unknown>>(p.answers, {})[TRYOUT_ANSWER]
   const ed = enrollmentId ? (db.prepare('SELECT division_id FROM enrollments WHERE id = ?').get(enrollmentId) as { division_id: string | null }).division_id : null
   const edDiv = ed ? division(ed) : undefined
-  if (enrollmentId && typeof tryout === 'boolean' && (tryoutTeam(c, k.id) || (edDiv && !edDiv.group_key && canTryOut(edDiv)))) {
+  if (enrollmentId && typeof tryout === 'boolean' && edDiv && canTryOut(edDiv)) {
     try { setTryout(enrollmentId, tryout, 'registration') } catch (e) { if (!(e instanceof UserError)) throw e }
   }
   // Remember the parent for next year's returning-player outreach.

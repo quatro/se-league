@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { config } from '../config.js'
 import { requireAdmin, throttled, noteFailure } from '../lib/auth.js'
 import * as C from '../lib/campaigns.js'
+import * as F from '../lib/family.js'
 import * as O from '../lib/outreach.js'
 import * as P from '../lib/plans.js'
 import { revenue } from '../lib/finance.js'
@@ -77,6 +78,30 @@ register.post('/api/register/:slug/siblings', wrap((req, res) => {
   const c = openCampaign(req)
   const b = siblingsBody.parse(req.body)
   return { siblings: C.siblingMatches(c, b.first, b.last, b.dob, b.email, b.phone) }
+}))
+
+// Family look-up: a parent's email → a 6-digit code → their returning players filled in. Nothing about the
+// kids is shown until the code checks out; "known" only says a code can be sent.
+const famEmail = z.string().trim().max(200)
+register.post('/api/register/:slug/family/lookup', wrap((req, res) => {
+  if (tooManyLookups(req)) return res.status(429).json({ error: 'Too many lookups — please wait a few minutes.' })
+  return { known: F.familyKnown(openCampaign(req), z.object({ email: famEmail }).parse(req.body).email, !!req.admin) }
+}))
+register.post('/api/register/:slug/family/code', wrap(async (req, res) => {
+  const key = `famcode:${req.ip}`
+  if (throttled(key)) return res.status(429).json({ error: 'Too many codes requested — please wait a few minutes.' })
+  noteFailure(key) // counts codes sent: 8 per 15 minutes per connection
+  return F.sendFamilyCode(openCampaign(req), z.object({ email: famEmail }).parse(req.body).email, !!req.admin)
+}))
+register.post('/api/register/:slug/family/verify', wrap((req, res) => {
+  const key = `famverify:${req.ip}`
+  if (throttled(key)) return res.status(429).json({ error: 'Too many tries — please wait a few minutes.' })
+  const b = z.object({ email: famEmail, code: z.string().max(20) }).parse(req.body)
+  try { return F.verifyFamilyCode(openCampaign(req), b.email, b.code) } catch (e) { noteFailure(key); throw e }
+}))
+register.post('/api/register/:slug/family/intent', wrap((req) => {
+  const b = z.object({ token: z.string().max(100), kidId: z.string().max(40), intent: z.enum(['yes', 'no', 'unsure']) }).parse(req.body)
+  return F.familyIntent(openCampaign(req), b.token, b.kidId, b.intent)
 }))
 
 // Interest check: a family answering "is your player coming back?" from their email. Public; the token is the key.
@@ -166,7 +191,7 @@ admin.post('/', wrap((req) => {
 }))
 admin.get('/:id', wrap((req) => C.adminCampaign(p(req, 'id'))))
 admin.patch('/:id', wrap((req) => C.saveCampaign(p(req, 'id'), campaignBody.parse(req.body), actor(req))))
-admin.post('/:id/programs-from-season', wrap((req) => { const n = C.programsFromSeason(p(req, 'id'), actor(req)); return { added: n, message: n ? `Added ${n} programs` : 'Every division already has a program' } }))
+admin.post('/:id/programs-from-season', wrap((req) => { const n = C.programsFromSeason(p(req, 'id'), actor(req)); return { added: n, message: n ? `Added ${n} divisions` : 'Every season division is already here' } }))
 
 const ids = z.array(z.string().max(40)).max(50).optional()
 const offeringBody = z.object({ name: z.string().min(1).max(80), description: z.string().max(2000).optional(), division_id: z.union([z.string(), z.null()]).optional(),

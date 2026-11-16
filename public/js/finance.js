@@ -61,7 +61,7 @@ function renderFinance() {
       <div class="vlegend"><span><i class="sw fin-col"></i>Collected ${usd(t.collected)}</span><span><i class="sw fin-due"></i>Not yet due ${usd(notDue)}</span><span><i class="sw fin-late"></i>Past due ${usd(k.pastDue)}</span>${k.waived ? `<span><i class="sw fin-waived"></i>Waived ${usd(k.waived)}</span>` : ''}</div>
     </div>
     <div class="grid3">
-      <div><h3>By program</h3><table class="kt fintable">${d.byProgram.map((r) => `<tr><td>${esc(r.name)}<div class="sub">${r.players} players</div></td><td>${dataBar(r.cents, maxProg)}</td><td class="num">${usd(r.cents)}</td></tr>`).join('') || '<tr><td class="note">Nothing yet.</td></tr>'}</table></div>
+      <div><h3>By division</h3><table class="kt fintable">${d.byProgram.map((r) => `<tr><td>${esc(r.name)}<div class="sub">${r.players} players</div></td><td>${dataBar(r.cents, maxProg)}</td><td class="num">${usd(r.cents)}</td></tr>`).join('') || '<tr><td class="note">Nothing yet.</td></tr>'}</table></div>
       <div><h3>By fee</h3><table class="kt fintable">${d.byItem.map((r) => `<tr><td>${esc(r.name)}<div class="sub">${r.qty} sold</div></td><td>${dataBar(r.cents, maxItem)}</td><td class="num">${usd(r.cents)}</td></tr>`).join('') || '<tr><td class="note">Nothing yet.</td></tr>'}</table></div>
       <div><h3>Collected by month</h3><table class="kt fintable">${d.byMonth.map((r) => `<tr><td>${esc(monthName(r.month))}</td><td>${dataBar(r.cents, maxMonth)}</td><td class="num">${usd(r.cents)}</td></tr>`).join('') || '<tr><td class="note">Nothing yet.</td></tr>'}</table></div>
     </div>`;

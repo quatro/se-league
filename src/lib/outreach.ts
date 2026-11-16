@@ -322,19 +322,28 @@ export function answerInterest(tok: string, answers: { kidId: string; intent: In
   db.transaction(() => {
     for (const a of answers) {
       if (!mine.has(a.kidId)) throw new UserError('That player isn’t on this link')
-      const e = db.prepare('SELECT * FROM enrollments WHERE season_id = ? AND kid_id = ?').get(o.season_id, a.kidId) as (Enrollment & { intent: string }) | undefined
-      if (!e || e.status === 'Registered') continue
-      const prev = e.intent
-      db.prepare(`UPDATE enrollments SET intent = ?, intent_at = ? WHERE id = ?`).run(a.intent, new Date().toISOString(), e.id)
-      const undoNo = e.status === 'Not returning' && prev === 'no'
-      const to = a.intent === 'no' ? (['Expected', 'Need to contact'].includes(e.status) ? 'Not returning' : null)
-        : a.intent === 'yes' ? (e.status === 'Need to contact' || undoNo ? 'Expected' : null)
-        : (e.status === 'Expected' || undoNo ? 'Need to contact' : null)
-      if (to && !e.status_locked) updateEnrollment(e.id, { status: to }, `family:${m.email}`)
-      audit(`family:${m.email}`, 'interest_answered', o.season_id, a.kidId, { answer: a.intent, status: to ?? e.status })
-      saved++
+      if (applyIntent(o.season_id, a.kidId, a.intent, `family:${m.email}`)) saved++
     }
   })()
   changed()
   return { saved }
+}
+
+/**
+ * A family's answer for one kid, from an interest email or the registration form. "Not this year" frees the
+ * seat held for them; "Yes" puts a Need-to-contact kid back to Expected; "Not sure" marks Need to contact.
+ * An admin-locked status keeps only the answer; anyone already Registered is left alone.
+ */
+export function applyIntent(seasonId: string, kidId: string, intent: Intent, actor: string): boolean {
+  const e = db.prepare('SELECT * FROM enrollments WHERE season_id = ? AND kid_id = ?').get(seasonId, kidId) as (Enrollment & { intent: string }) | undefined
+  if (!e || e.status === 'Registered') return false
+  const prev = e.intent
+  db.prepare(`UPDATE enrollments SET intent = ?, intent_at = ? WHERE id = ?`).run(intent, new Date().toISOString(), e.id)
+  const undoNo = e.status === 'Not returning' && prev === 'no'
+  const to = intent === 'no' ? (['Expected', 'Need to contact'].includes(e.status) ? 'Not returning' : null)
+    : intent === 'yes' ? (e.status === 'Need to contact' || undoNo ? 'Expected' : null)
+    : (e.status === 'Expected' || undoNo ? 'Need to contact' : null)
+  if (to && !e.status_locked) updateEnrollment(e.id, { status: to }, actor)
+  audit(actor, 'interest_answered', seasonId, kidId, { answer: intent, status: to ?? e.status })
+  return true
 }

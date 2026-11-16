@@ -140,7 +140,7 @@ test('sibling pick: set ahead in a chosen round, skipped by the draft, kept by u
   assert.equal(D.draftState(maj, true).picks.length, 0)
 })
 
-test('Majors draft: picks move kids to Majors; closing sends the rest to the Minors draft', () => {
+test('Majors draft: picks move kids to Majors; closing sends Minors returners back to their team, the rest to the Minors draft', () => {
   const maj = draft('2027', 'majors').id
   L.saveTeam(div('2027', 'majors').id, null, { name: 'Cards' }, A)
   const st = D.draftState(maj, true)
@@ -152,19 +152,26 @@ test('Majors draft: picks move kids to Majors; closing sends the rest to the Min
   const g = L.seasonState('2027', false).groups[0]!
   assert.equal(g.seats.capacity, 12)
   const r = D.closeDraft(maj, A)
-  assert.equal(r.undrafted, 3)
-  // Undrafted tryouts (including the Minors returner) go to the Minors draft, not back to the old team.
+  assert.equal(r.undrafted, 2)
+  assert.equal(r.backToTeam, 1)
+  // An undrafted Minors returner goes back to their own Minors team; other undrafted tryouts go to the Minors draft.
   // Minors stays 10–12: an undrafted 9 goes straight back to the 9-Year-Old League, not into the Minors draft.
-  assert.deepEqual(pool('2027', 'minors'), ['Min Try', 'New Ten'])
+  assert.deepEqual(pool('2027', 'minors'), ['New Ten'])
   assert.equal(enr('2027', 'Rook Eight').draft_id, null)
   assert.equal(place('2027', 'Rook Eight').eff_division_id, div('2027', 'nine').id)
+  assert.equal(enr('2027', 'Min Try').team_id, enr('2027', 'Min Try').returning_team_id)
+  // Reopening puts them back in the Majors pool; closing again sends them back.
+  D.reopenDraft(maj, A)
   assert.equal(enr('2027', 'Min Try').team_id, null)
+  assert.ok(pool('2027', 'majors').includes('Min Try'))
+  D.closeDraft(maj, A)
+  assert.equal(L.team(enr('2027', 'Min Try').team_id!)!.name, 'Tigers')
 })
 
 test('Minors draft: 9s are never in it', () => {
   const min = draft('2027', 'minors').id
-  D.makePick(min, enr('2027', 'Min Try').id, A)
-  assert.equal(place('2027', 'Min Try').eff_division_id, div('2027', 'minors').id)
+  D.makePick(min, enr('2027', 'New Ten').id, A)
+  assert.equal(place('2027', 'New Ten').eff_division_id, div('2027', 'minors').id)
   assert.throws(() => D.reopenDraft(draft('2027', 'majors').id, A), /already started/)
   D.closeDraft(min, A)
   assert.equal(enr('2027', 'Rook Eight').draft_id, null)
@@ -201,8 +208,8 @@ test('admin move is pinned against a re-run registration', () => {
 test('kid history spans seasons', () => {
   const k = enr('2027', 'Min Try').kid_id
   const h = L.kidHistory(k)
-  assert.deepEqual(h.seasons.map((s) => [s.year, s.division, s.team]), [[2026, 'Minors', 'Tigers'], [2027, 'Minors', h.seasons[1]!.team]])
-  assert.match(h.seasons[1]!.how, /^Drafted/)
+  assert.deepEqual(h.seasons.map((s) => [s.year, s.division, s.team]), [[2026, 'Minors', 'Tigers'], [2027, 'Minors', 'Tigers']])
+  assert.match(h.seasons[1]!.how, /^Returned to team/)
 })
 
 test('late 2026 rosters carry into 2027 as returners', () => {

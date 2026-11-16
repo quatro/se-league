@@ -202,7 +202,7 @@ test('waitlist only, first come first served, expired offers, removing a family'
   assert.equal(pubT().full, false, 'nobody waiting: the open seat is for anyone')
   save('closed')
   assert.equal(pub().offerings.some((o) => o.name === 'T-Ball'), false)
-  await assert.rejects(C.startCheckout('2027-spring', family([{ ...kid('Ivy', '2021-05-01', 'Major/Minor'), offeringId: tball().id }]), base), /pick a program/)
+  await assert.rejects(C.startCheckout('2027-spring', family([{ ...kid('Ivy', '2021-05-01', 'Major/Minor'), offeringId: tball().id }]), base), /pick a division/)
   save('open')
   setSpots('T-Ball', 2)
   // Full (over, even) — but a returner expected back in T-Ball already holds a seat, so they pay and register.
@@ -323,6 +323,47 @@ test('returning players: matched from last season, confirmed by the family, kept
   assert.deepEqual(sibs('2015-02-02', 'someone@example.com'), [], 'not their parent')
   assert.deepEqual(sibs('2019-08-08', 'pat.dob@example.com'), [], 'not the player')
 
+  // Parent first: their email → a code by email → their players. Nothing about the kids before the code.
+  const { config } = await import('../src/config.js')
+  const F = await import('../src/lib/family.js')
+  const O = await import('../src/lib/outreach.js')
+  void O
+  L.enroll('2027', grace.id, { divisionId: L.divisionByKey('2027', 'majors')!.id, returner: true }, A)
+  assert.equal(F.familyKnown(c, 'pat.dob@example.com'), false, 'email not set up: no look-up')
+  const realFetch = globalThis.fetch, mails: string[] = []
+  Object.assign(config.mail, { resendApiKey: 're_test', from: 'League <x@example.com>' })
+  globalThis.fetch = (async (_u: string, init: { body: string }) => { mails.push(init.body); return new Response(JSON.stringify({ data: [{ id: 'm1' }] }), { status: 200 }) }) as typeof fetch
+  try {
+    assert.equal(F.familyKnown(c, ' Pat.Dob@Example.com '), true)
+    assert.equal(F.familyKnown(c, 'stranger@example.com'), false)
+    Object.assign(config.mail, { from: 'League <onboarding@resend.dev>' })
+    assert.equal(F.familyKnown(c, 'pat.dob@example.com'), false, 'Resend’s test sender can’t reach families')
+    assert.equal(F.familyKnown(c, 'pat.dob@example.com', true), true, '…but an admin previewing can try it')
+    Object.assign(config.mail, { from: 'League <x@example.com>' })
+    assert.deepEqual(await F.sendFamilyCode(c, 'stranger@example.com'), { sent: false }, 'no email to addresses we don’t know')
+    assert.equal(mails.length, 0)
+    assert.deepEqual(await F.sendFamilyCode(c, 'pat.dob@example.com'), { sent: true })
+    const code = /is (\d{6})/.exec(JSON.parse(mails[0]!)[0].text)![1]!
+    assert.throws(() => F.verifyFamilyCode(c, 'pat.dob@example.com', code === '000000' ? '111111' : '000000'), /doesn’t match/)
+    const v = F.verifyFamilyCode(c, 'PAT.DOB@example.com', code)
+    assert.equal(v.guardian.firstName, 'Pat')
+    assert.deepEqual(v.kids.map((k) => [k.firstName, k.team, k.registered]), [['Will', 'Astros', false], ['Grace', 'Astros', false]])
+    assert.throws(() => F.verifyFamilyCode(c, 'pat.dob@example.com', code), /expired/, 'a code works once')
+    // "Not this year" from the form frees Grace's seat; a kid from another family can't be touched.
+    F.familyIntent(c, v.token, grace.id, 'no')
+    assert.equal((db.prepare(`SELECT status FROM enrollments WHERE season_id = '2027' AND kid_id = ?`).get(grace.id) as { status: string }).status, 'Not returning')
+    F.familyIntent(c, v.token, grace.id, 'yes')
+    assert.equal((db.prepare(`SELECT status FROM enrollments WHERE season_id = '2027' AND kid_id = ?`).get(grace.id) as { status: string }).status, 'Expected')
+    assert.throws(() => F.familyIntent(c, v.token, sam.id, 'no'), /isn’t on this family/)
+    assert.throws(() => F.familyIntent(c, 'not-a-token', grace.id, 'no'), /expired/)
+    // At most 3 codes per 15 minutes per email.
+    await F.sendFamilyCode(c, 'pat.dob@example.com'); await F.sendFamilyCode(c, 'pat.dob@example.com')
+    await assert.rejects(F.sendFamilyCode(c, 'pat.dob@example.com'), /a few codes already/)
+  } finally {
+    globalThis.fetch = realFetch
+    Object.assign(config.mail, { resendApiKey: '', from: '' })
+  }
+
   const samP = { ...kid('Sam', '2015-05-01', 'Major/Minor'), lastName: 'Old' }
   assert.throws(() => C.quote('2027-spring', family([samP])), /played in 2026/)
   assert.throws(() => C.quote('2027-spring', family([{ ...samP, returning: tom.id }])), /re-check/)
@@ -348,4 +389,48 @@ test('returning players: matched from last season, confirmed by the family, kept
   assert.equal(L.kid(tom.id)!.birthdate, null)
   const row = C.exportRows(cid, false).find((x) => x[4] === 'Tom')!
   assert.equal(row[C.exportRows(cid, false)[0]!.indexOf('Played last season')], 'No (family said new)')
+})
+
+test('Majors tryouts by where the player stands: Majors returner, Minors returner, up from the 9s, new', async () => {
+  const c = C.mustCampaign(cid)
+  const div = (s: string, k: string) => L.divisionByKey(s, k)!.id
+  L.saveDivision('2026', null, { key: 'nine', name: '9-Year-Old League', teams: 1, roster_size: 12, min_age: 9, max_age: 9 }, A)
+  L.saveDivision('2026', null, { key: 'minors', name: 'Minors', teams: 1, roster_size: 12, min_age: 10, max_age: 12 }, A)
+  const t26 = (k: string, name: string) => L.saveTeam(div('2026', k), null, { name }, A).id
+  const cubs = L.saveTeam(div('2027', 'minors'), null, { name: 'Cubs' }, A).id
+  const reds = L.divisionTeams(div('2027', 'majors')).find((t) => t.name === 'Reds')!.id
+  const make = (name: string, dob: string, d26: string, team26: string, d27: string, team27: string | null) => {
+    const k = L.createKid(`${name} Kid`, dob)
+    L.enroll('2026', k.id, { divisionId: div('2026', d26), teamId: team26, status: 'Registered' }, A)
+    L.enroll('2027', k.id, { divisionId: div('2027', d27), teamId: team27, returner: true, tryout: d27 === 'minors' }, A)
+    if (d27 === 'minors' && team27) db.prepare('UPDATE enrollments SET team_id = NULL WHERE kid_id = ?').run(k.id) // rollover: assumed trying out
+    return k.id
+  }
+  const maj = make('Max', '2015-04-04', 'majors', L.divisionTeams(div('2026', 'majors'))[0]!.id, 'majors', reds)
+  const min = make('Mo', '2016-01-06', 'minors', t26('minors', 'Cubs'), 'minors', cubs)
+  const ris = make('Ria', '2017-03-03', 'nine', t26('nine', 'Bats'), 'minors', null)
+  assert.deepEqual([maj, min, ris].map((id) => C.groupCase(c, id)), ['majors', 'minors', 'rising'])
+  assert.equal(C.returningMatches(c, 'Mo', 'Kid', '2016-01-06')[0]!.groupCase, 'minors')
+  assert.equal(pub().offerings.find((o) => o.name === 'Major/Minor')!.tryout, 'group')
+  assert.equal(pub().offerings.find((o) => o.name === 'Major/Minor')!.description, '', 'no blanket “tryouts” hint')
+
+  const p = (first: string, dob: string, returning?: string, tryout?: boolean) => ({ ...kid(first, dob, 'Major/Minor'), answers: { [q('Shirt size')]: 'Youth M', [q('Baseball experience')]: 'First season' }, returning, tryout })
+  const answer = (pl: object) => C.quote('2027-spring', family([pl])).players[0]!.answers[C.TRYOUT_ANSWER]
+  // Back on a Majors team: nothing to answer.
+  assert.equal(answer(p('Max', '2015-04-04', maj)), undefined)
+  // Back on a Minors team: must choose.
+  assert.throws(() => answer(p('Mo', '2016-01-06', min)), /try out for Majors/)
+  assert.equal(answer(p('Mo', '2016-01-06', min, false)), false)
+  // Up from the 9s: tryouts, and Majors-and-Minors or Minors only.
+  assert.throws(() => answer(p('Ria', '2017-03-03', ris)), /considered for Majors/)
+  assert.equal(answer(p('Ria', '2017-03-03', ris, false)), false)
+  // New to the league: tryouts, no choice.
+  assert.equal(answer(p('Nell', '2016-08-08')), true)
+  assert.equal(answer(p('Nell', '2016-08-08', undefined, false)), true, 'a new player can’t opt out')
+
+  // Mo stays with the Cubs: paid → back on the team, not in any draft.
+  const r = await C.startCheckout('2027-spring', family([p('Mo', '2016-01-06', min, false)]), base)
+  paid(r.orderId)
+  const e = db.prepare(`SELECT * FROM enrollments WHERE season_id = '2027' AND kid_id = ?`).get(min) as L.Enrollment
+  assert.deepEqual([e.status, e.tryout, e.team_id, e.draft_id], ['Registered', 0, cubs, null])
 })
