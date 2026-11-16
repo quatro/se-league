@@ -213,7 +213,11 @@ function drawReturning(sec) {
       <button type="button" class="linkbtn" data-askret>Not ${esc(first)}? Change</button></div>`;
   } else if (sec._returning === 'new') {
     box.innerHTML = `<div class="rbanner" role="status"><div><b>New player — welcome!</b></div><button type="button" class="linkbtn" data-askret>Change</button></div>`;
+  } else if (!sec._dismissed) {
+    // Not answered yet: the dialog asks (now, or once they finish typing). Nothing in the card meanwhile.
+    box.innerHTML = '';
   } else {
+    // They closed the dialog without answering: keep the question in the card until they do.
     box.innerHTML = `<div class="rbanner ask"><span class="rq" aria-hidden="true">?</span>
       <div><b>${ms.length === 1 ? `Did ${esc(first)} play with us in ${prior}?` : `We found more than one ${esc(first)} from ${prior}`}</b><span>Returning players keep their spot — tell us so we can hold it.</span></div>
       <button type="button" class="btn primary" data-askret>Answer</button></div>`;
@@ -256,12 +260,15 @@ function askReturning(sec) {
   }
   dlg.setAttribute('aria-labelledby', 'retTitle');
   dlg.innerHTML = `<div class="dlg">${body}</div>`;
+  let answered = false;
   dlg.onclick = (e) => {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.hasAttribute('data-checkdob')) { dlg.close(); sec.querySelector('[name=dob]').focus(); return; }
-    if (b.dataset.ans) { dlg.close(); answerReturning(sec, b.dataset.ans); }
+    if (b.dataset.ans) { answered = true; dlg.close(); answerReturning(sec, b.dataset.ans); }
   };
+  // Closed without an answer (Esc): only now does the card show the question.
+  dlg.onclose = () => { if (!answered && !sec._returning) { sec._dismissed = true; drawReturning(sec); } };
   if (!dlg.open) dlg.showModal();
   dlg.querySelector('.btn.primary, .rcard')?.focus();
 }
@@ -284,12 +291,9 @@ function answerReturning(sec, value) {
   const need = missing(sec);
   const next = !sec.querySelector('[name=gender]').value ? sec.querySelector('[name=gender]')
     : sec.querySelector('.pqs :is(select,input,textarea):not([type=hidden])');
-  if (m && need.length) {
-    const note = document.createElement('p');
-    note.className = 'rleft';
-    note.textContent = `Just ${need.length === 1 ? 'one thing' : 'a few things'} left for ${sec.querySelector('[name=first]').value.trim()}: ${need.join(', ')}.`;
-    sec.querySelector('.returning .rbanner')?.after(note);
-  }
+  // The "what's left" note under the banner; renderHead keeps it current as they fill things in.
+  sec._showLeft = !!m;
+  drawLeft(sec, need);
   next?.focus();
 }
 function renderPlayer(sec) {
@@ -399,6 +403,17 @@ function playerCost(sec, p) {
   }
   return { o, lines, total: lines.reduce((t, l) => t + l.cents, 0), waits: false };
 }
+/* After a "Yes": what this returner still needs, kept live, gone once they're done. */
+function drawLeft(sec, need) {
+  let el = sec.querySelector('.returning .rleft');
+  if (!sec._showLeft || !isReturner(sec) || !need.length) { el?.remove(); return; }
+  if (!el) {
+    const banner = sec.querySelector('.returning .rbanner');
+    if (!banner) return;
+    el = document.createElement('p'); el.className = 'rleft'; banner.after(el);
+  }
+  el.textContent = `Just ${need.length === 1 ? 'one thing' : 'a few things'} left for ${sec.querySelector('[name=first]').value.trim()}: ${need.join(', ')}.`;
+}
 function renderHead(sec, n, p, cost) {
   const age = leagueAge(p.birthdate), m = matchOf(sec), need = missing(sec);
   sec.querySelector('.pnum').textContent = n + 1;
@@ -413,6 +428,7 @@ function renderHead(sec, n, p, cost) {
     : need.length ? '<span class="tag need">Needs info</span>' : '<span class="tag ok">Ready</span>';
   sec.querySelector('.pamt').textContent = cost.o ? money(cost.total) : '';
   sec._need = need;
+  drawLeft(sec, need);
   if (!need.length) sec.querySelector('.pmissing').textContent = '';
 }
 
@@ -570,6 +586,8 @@ async function showDone() {
   $('players').addEventListener('click', (e) => {
     const sec = e.target.closest('.player');
     if (e.target.closest('[data-toggle]')) { openCard(sec.classList.contains('open') ? null : sec); return; }
+    // "Answer" / "Not Eli? Change" / "Change": ask the returning-player question again.
+    if (e.target.closest('[data-askret]')) { askReturning(sec); return; }
     if (e.target.matches('[data-done]')) {
       renderSummary();
       if (sec._need.length) { sec.querySelector('.pmissing').textContent = `Still needed: ${sec._need.join(', ')}.`; return; }

@@ -302,8 +302,8 @@ test('returning players: matched from last season, confirmed by the family, kept
   assert.equal(diff[0]!.division, null)
   assert.deepEqual(C.returningMatches(c, 'Newbie', 'Kid', '2015-05-01'), [])
   // Near misses on the birthdate still ask; a different kid's birthdate doesn't.
-  for (const d of ['2015-02-05', '2015-04-02', '2016-02-02', '2015-01-30']) assert.equal(C.returningMatches(c, 'Will', 'Dob', d).length, 1, `close: ${d}`)
-  for (const d of ['2015-02-20', '2015-08-02', '2013-02-02', '2016-06-14']) assert.deepEqual(C.returningMatches(c, 'Will', 'Dob', d), [], `not close: ${d}`)
+  for (const d of ['2015-02-05', '2015-04-02', '2016-02-02', '2015-01-30', '2015-01-03', '2016-03-02']) assert.equal(C.returningMatches(c, 'Will', 'Dob', d).length, 1, `close: ${d}`)
+  for (const d of ['2015-02-20', '2015-08-02', '2013-02-02', '2016-06-14', '2016-03-03']) assert.deepEqual(C.returningMatches(c, 'Will', 'Dob', d), [], `not close: ${d}`)
   // Same last name + birthdate, a first name that's a near miss: a full match (team and all).
   for (const f of ['Wil', 'Willy', 'Wiill']) assert.deepEqual(C.returningMatches(c, f, 'Dob', '2015-02-02').map((x) => [x.name, x.team, x.dobDiffers]), [['Will Dob', 'Astros', false]], f)
   // …but a brother or sister with the same birthdate (a twin) is not.

@@ -168,15 +168,17 @@ export function returningMatches(c: Campaign, first: string, last: string, dob: 
     .slice(0, 1).map((r) => ({ id: r.id, name: r.name, year: prior.year, division: null, team: null, suggestOfferingId: null, seatOfferingId: null, tryoutTeam: null, dobDiffers: true }))
 }
 
-/** A birthdate that's probably a slip: one part off by a little, or the day and month swapped. */
+/** A birthdate that's probably a slip: one or two parts off by a little, or the day and month swapped. */
 export function dobClose(a: string, b: string): boolean {
   const [y1, m1, d1] = a.split('-').map(Number), [y2, m2, d2] = b.split('-').map(Number)
   if ([y1, m1, d1, y2, m2, d2].some((n) => !Number.isFinite(n))) return false
   if (a === b) return true
   if (y1 === y2 && m1 === d2 && d1 === m2) return true
   const dy = Math.abs(y1! - y2!), dm = Math.abs(m1! - m2!), dd = Math.abs(d1! - d2!)
+  // Up to two of year / month / day can be off, each by a little: a year, a month or two, a few days
+  // (06/27 for 07/26 is a slip on both month and day). All three off is a different kid.
   const parts = [dy, dm, dd].filter((n) => n > 0).length
-  if (parts === 1) return dy === 1 || (dm > 0 && dm <= 2) || (dd > 0 && dd <= 3)
+  if (parts <= 2 && dy <= 1 && dm <= 2 && dd <= 3) return true
   // Or simply within a couple of weeks (e.g. 31 Jan vs 2 Feb).
   return Math.abs(Date.parse(a) - Date.parse(b)) <= 14 * 864e5
 }
