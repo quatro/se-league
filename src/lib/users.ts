@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express'
 import { config } from '../config.js'
-import { createLoginLink, endSessions, linkMinutes, normEmail, redeemLoginLink, safeNext, userByEmail, type Role } from './auth.js'
+import { createLoginLink, endSessions, hasRole, linkMinutes, normEmail, redeemLoginLink, safeNext, userByEmail, type Role } from './auth.js'
 import { authDb as db } from './authdb.js'
 import { audit, UserError } from './league.js'
 import { mailConfigured, sendBatch } from './mailer.js'
@@ -8,27 +8,35 @@ import { mailConfigured, sendBatch } from './mailer.js'
 // Who may sign in, and the emailed sign-in links. Users and admins live in the
 // shared auth database, so the same list works on every league tool.
 
-export interface User { id: number; email: string; name: string; role: Role; created_at: string; last_login_at: string | null }
+export interface User { id: number; email: string; name: string; role: Role; board: boolean; created_at: string; last_login_at: string | null }
 
 export const mailOn = mailConfigured
-export const listUsers = () => db.prepare('SELECT * FROM users ORDER BY role DESC, email').all() as User[]
-export const userById = (id: number) => db.prepare('SELECT * FROM users WHERE id = ?').get(id) as User | undefined
+const withRoles = (u: Omit<User, 'board'> | undefined) => (u ? { ...u, board: hasRole(u.id, 'board') } as User : undefined)
+export const listUsers = () => (db.prepare('SELECT * FROM users ORDER BY role DESC, email').all() as Omit<User, 'board'>[]).map((u) => withRoles(u)!)
+export const userById = (id: number) => withRoles(db.prepare('SELECT * FROM users WHERE id = ?').get(id) as Omit<User, 'board'> | undefined)
+
+/** Put someone on or off the Board of Directors (view-only access to the admin areas). */
+function setBoard(id: number, on: boolean) {
+  if (on) db.prepare(`INSERT OR IGNORE INTO user_roles (user_id, role) VALUES (?, 'board')`).run(id)
+  else db.prepare(`DELETE FROM user_roles WHERE user_id = ? AND role = 'board'`).run(id)
+}
 const adminCount = () => (db.prepare(`SELECT COUNT(*) n FROM users WHERE role = 'admin'`).get() as { n: number }).n
 const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)
 
-export function addUser(b: { email: string; name?: string; role: Role }, actor: string): User {
+export function addUser(b: { email: string; name?: string; role: Role; board?: boolean }, actor: string): User {
   const email = normEmail(b.email)
   if (!validEmail(email)) throw new UserError('Enter a valid email address')
   if (userByEmail(email)) throw new UserError(`${email} is already on the list`)
   const id = Number(db.prepare('INSERT INTO users (email, name, role) VALUES (?, ?, ?)').run(email, (b.name ?? '').trim(), b.role).lastInsertRowid)
-  audit(actor, 'user_added', null, null, { email, role: b.role })
+  if (b.board) setBoard(id, true)
+  audit(actor, 'user_added', null, null, { email, role: b.role, ...(b.board ? { board: true } : {}) })
   return userById(id)!
 }
 
 /** The signed-in person's own users.id, if they signed in by link (the password admin has none). */
 const selfId = (req: Request) => (req.user && req.user.id > 0 ? req.user.id : null)
 
-export function updateUser(id: number, b: { email?: string; name?: string; role?: Role }, req: Request, actor: string) {
+export function updateUser(id: number, b: { email?: string; name?: string; role?: Role; board?: boolean }, req: Request, actor: string) {
   const u = userById(id); if (!u) throw new UserError('Unknown user')
   if (b.role && b.role !== u.role && u.role === 'admin') {
     if (selfId(req) === id) throw new UserError('You can’t remove your own admin access')
@@ -39,8 +47,10 @@ export function updateUser(id: number, b: { email?: string; name?: string; role?
   if (email !== u.email && userByEmail(email)) throw new UserError(`${email} is already on the list`)
   db.prepare('UPDATE users SET email = ?, name = ?, role = ? WHERE id = ?').run(email, b.name !== undefined ? b.name.trim() : u.name, b.role ?? u.role, id)
   // A new role or address takes effect right away: they sign in again.
+  const boardChanged = b.board !== undefined && b.board !== u.board
+  if (boardChanged) setBoard(id, b.board!)
   if ((b.role && b.role !== u.role) || email !== u.email) endSessions(id)
-  audit(actor, 'user_changed', null, null, { email, ...(b.role && b.role !== u.role ? { role: b.role } : {}), ...(email !== u.email ? { was: u.email } : {}) })
+  audit(actor, 'user_changed', null, null, { email, ...(b.role && b.role !== u.role ? { role: b.role } : {}), ...(boardChanged ? { board: b.board } : {}), ...(email !== u.email ? { was: u.email } : {}) })
 }
 
 export function removeUser(id: number, req: Request, actor: string) {

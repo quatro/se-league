@@ -6,6 +6,7 @@ import path from 'node:path'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'seleague-p-'))
 process.env.DB_PATH = path.join(dir, 'league.db')
+process.env.AUTH_DB_PATH = path.join(dir, 'auth.db') // never the real shared login database
 // Never touch a real Stripe account or send real email from tests, whatever .env says.
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake'
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test'

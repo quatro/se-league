@@ -25,11 +25,11 @@ export function audit(actor: string, action: string, seasonId: string | null, ki
 export interface Season { id: string; year: number; status: 'planning' | 'active' | 'complete'; age_cutoff: string; warn_at: number; rolled_from: string | null; notes: string }
 export interface Division {
   id: string; season_id: string; key: string; name: string; sort: number; teams: number; roster_size: number; coaches: number | null
-  min_age: number | null; max_age: number | null; se_match: string; group_key: string; keep_teams: number; closed: number; notes: string
+  min_age: number | null; max_age: number | null; se_match: string; group_key: string; keep_teams: number; closed: number; notes: string; notify_coaches: number
 }
 export interface Team {
   id: string; season_id: string; division_id: string; name: string; color: string; fg: string; draft_order: number
-  wins: number | null; losses: number | null; ties: number | null; coach: string
+  wins: number | null; losses: number | null; ties: number | null; coach: string; coach_email: string; coach_phone: string
 }
 export interface Kid { id: string; name: string; name_key: string; birthdate: string | null; se_profile_id: string | null; notes: string }
 export interface Enrollment {
@@ -130,7 +130,7 @@ export function canTryOut(d: Division): boolean {
 
 export interface DivisionInput {
   name: string; teams: number; roster_size: number; coaches?: number | null; min_age?: number | null; max_age?: number | null
-  se_match?: string; group_key?: string; keep_teams?: boolean; closed?: boolean; notes?: string; key?: string; sort?: number
+  se_match?: string; group_key?: string; keep_teams?: boolean; closed?: boolean; notes?: string; key?: string; sort?: number; notify_coaches?: boolean
 }
 export function saveDivision(seasonId: string, id: string | null, d: DivisionInput, actor: string): Division {
   mustSeason(seasonId)
@@ -153,6 +153,7 @@ export function saveDivision(seasonId: string, id: string | null, d: DivisionInp
       sort, id, season_id, key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...vals, sort, id, seasonId, key)
     audit(actor, 'division_added', seasonId, null, { division: name })
   }
+  if (d.notify_coaches !== undefined) db.prepare('UPDATE divisions SET notify_coaches = ? WHERE id = ?').run(d.notify_coaches ? 1 : 0, id)
   refreshPools(seasonId)
   changed()
   return division(id)!
@@ -178,22 +179,26 @@ export const teams = (seasonId: string) => db.prepare('SELECT * FROM teams WHERE
 export const divisionTeams = (divisionId: string) => db.prepare('SELECT * FROM teams WHERE division_id = ? ORDER BY draft_order, name').all(divisionId) as Team[]
 export const team = (id: string) => db.prepare('SELECT * FROM teams WHERE id = ?').get(id) as Team | undefined
 
-export interface TeamInput { name: string; color?: string; fg?: string; wins?: number | null; losses?: number | null; ties?: number | null; coach?: string }
+export interface TeamInput { name: string; color?: string; fg?: string; wins?: number | null; losses?: number | null; ties?: number | null; coach?: string; coach_email?: string; coach_phone?: string }
 export function saveTeam(divisionId: string, id: string | null, t: TeamInput, actor: string): Team {
   const d = division(divisionId)
   if (!d) throw new UserError('Unknown division')
   const name = t.name.trim()
   if (!name) throw new UserError('Team name is required')
+  const email = t.coach_email === undefined ? undefined : t.coach_email.trim().toLowerCase()
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new UserError(`${name}: the coach email doesn’t look right`)
   if (id) {
     const cur = team(id)
     if (!cur || cur.division_id !== divisionId) throw new UserError('Unknown team')
     db.prepare('UPDATE teams SET name=?, color=?, fg=?, wins=?, losses=?, ties=?, coach=? WHERE id=?').run(name, t.color ?? cur.color, t.fg ?? cur.fg,
       t.wins !== undefined ? t.wins : cur.wins, t.losses !== undefined ? t.losses : cur.losses, t.ties !== undefined ? t.ties : cur.ties, t.coach ?? cur.coach, id)
+    db.prepare('UPDATE teams SET coach_email = ?, coach_phone = ? WHERE id = ?').run(email ?? cur.coach_email, (t.coach_phone ?? cur.coach_phone).trim(), id)
   } else {
     id = uid()
     const max = (db.prepare('SELECT COALESCE(MAX(draft_order), 0) m FROM teams WHERE division_id = ?').get(divisionId) as { m: number }).m
     db.prepare('INSERT INTO teams (id, season_id, division_id, name, color, fg, draft_order, wins, losses, ties, coach) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, d.season_id, divisionId, name, t.color ?? '#14213D', t.fg ?? '#FFFFFF', max + 1, t.wins ?? null, t.losses ?? null, t.ties ?? null, t.coach ?? '')
+    db.prepare('UPDATE teams SET coach_email = ?, coach_phone = ? WHERE id = ?').run(email ?? '', (t.coach_phone ?? '').trim(), id)
   }
   audit(actor, 'team_saved', d.season_id, null, { division: d.name, team: name })
   changed()
@@ -284,7 +289,7 @@ function groupChain(seasonId: string, groupKey: string): Draft[] {
  * in no pool. Inside a group, a kid trying out starts in the first open draft
  * (Majors); everyone else in the group waits for their home division's draft
  * (Minors). A 9-year-old trying out is in the group's first draft (Majors) only:
- * Minors stays 10–12, so a 9 not picked for Majors goes back to their own division.
+ * Minors stays 10–12. A 9 always plays in their own division; drafted to Majors, they play both.
  */
 export function poolFor(e: Enrollment, s: Season, birthdate: string | null): string | null {
   // Waitlisted kids haven't got a seat yet, so they aren't draftable.
@@ -437,7 +442,8 @@ export function seasonState(seasonId: string, isAdmin: boolean) {
   const kids = new Map(kidRows.map((k) => [k.id, k]))
   const ds = divisions(seasonId)
   const views: DivisionView[] = ds.map((d) => {
-    const mine = ps.filter((p) => p.eff_division_id === d.id)
+    // A 9 drafted to Majors plays both: they keep their seat at home as well as their Majors spot.
+    const mine = ps.filter((p) => p.eff_division_id === d.id || (!d.group_key && p.picked_in && p.division_id === d.id && p.eff_division_id !== d.id))
     const r = draftFor(d.id)
     const v: DivisionView = { ...d, seats: seats(d, mine, s.warn_at), draft: r ? { id: r.id, key: r.key, format: r.format, status: r.status } : null }
     if (isAdmin) {
@@ -465,7 +471,7 @@ export function seasonState(seasonId: string, isAdmin: boolean) {
   const base = {
     season: s, seasons: seasons().map(({ id, year, status }) => ({ id, year, status })), current: currentSeason()?.id ?? null,
     divisions: views, groups, total,
-    teams: ts.map(({ id, division_id, name, color, fg, draft_order, wins, losses, ties }) => ({ id, division_id, name, color, fg, draft_order, wins, losses, ties })),
+    teams: ts.map(({ id, division_id, name, color, fg, draft_order, wins, losses, ties, coach, coach_email, coach_phone }) => ({ id, division_id, name, color, fg, draft_order, wins, losses, ties, ...(isAdmin ? { coach, coach_email, coach_phone } : {}) })),
     drafts: drafts(seasonId).map((r) => ({ id: r.id, key: r.key, division_id: r.division_id, format: r.format, status: r.status, next_id: r.next_id,
       picks: (db.prepare('SELECT COUNT(*) n FROM picks WHERE draft_id = ?').get(r.id) as { n: number }).n,
       pool: ps.filter((p) => p.draft_id === r.id && !p.picked_in && !OUT.includes(p.status)).length })),

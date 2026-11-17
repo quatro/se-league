@@ -6,6 +6,7 @@ import path from 'node:path'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'seleague-g-'))
 process.env.DB_PATH = path.join(dir, 'league.db')
+process.env.AUTH_DB_PATH = path.join(dir, 'auth.db') // never the real shared login database
 // Never touch a real Stripe account or send real email from tests, whatever .env says.
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake'
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test'
@@ -82,6 +83,10 @@ test('interest check: one click per kid moves the seat math', async () => {
   assert.equal(enr('Cy Kid').status, 'Need to contact')
   assert.equal(enr('Di Kid').status, 'Expected')
   assert.equal(enr('Di Kid').intent, 'yes')
+  // Stored against this kid and this season, as the family's own word, with when they said it.
+  const di27 = db.prepare(`SELECT season_id, intent, intent_by, intent_at FROM enrollments WHERE kid_id = ? AND season_id = '2027'`).get(di) as { season_id: string; intent: string; intent_by: string; intent_at: string }
+  assert.deepEqual([di27.season_id, di27.intent, di27.intent_by], ['2027', 'yes', 'family'])
+  assert.ok(Date.now() - Date.parse(di27.intent_at) < 60_000)
   assert.equal(C.availability(rookie()).guard!.buffer, before + 1)
   // Changed their mind: back to Expected.
   O.answerInterest(m.token, [{ kidId: bo, intent: 'yes' }])

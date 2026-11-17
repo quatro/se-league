@@ -91,6 +91,8 @@ export function draftState(id: string, isAdmin: boolean) {
         })() : {}),
         ...(hide ? { name: null, age: null, status: null, rank: null, hidden: true } : {
           name: k?.name ?? '?', age: ageIn(s, k?.birthdate ?? null, p.age), status: p.status, rank: p.rank, tryout: !!p.tryout, prior: p.prior,
+          // A younger player trying out from their own division (a 9 from the 9-Year-Old League): drafted up, or back home — never into Minors.
+          ...(kind === 'pool' && p.tryout && p.division_id && p.division_id !== b.d.id && !division(p.division_id)?.group_key ? { playingUp: division(p.division_id)?.name ?? '' } : {}),
           ...(isAdmin ? { notes: p.notes } : {}),
         }),
       }

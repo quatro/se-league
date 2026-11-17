@@ -377,6 +377,10 @@ addColumn('order_players', 'held_seat', `INTEGER NOT NULL DEFAULT 0`)
 addColumn('outreach', 'kind', `TEXT NOT NULL DEFAULT 'register' CHECK (kind IN ('register','interest'))`)
 addColumn('enrollments', 'intent', `TEXT NOT NULL DEFAULT '' CHECK (intent IN ('','yes','no','unsure'))`)
 addColumn('enrollments', 'intent_at', 'TEXT')
+// Who gave the answer: a family's own word ('family') outweighs a coach passing it on ('coach') or the league ('league').
+addColumn('enrollments', 'intent_by', `TEXT NOT NULL DEFAULT ''`)
+db.exec(`UPDATE enrollments SET intent_by = 'family' WHERE intent <> '' AND intent_by = '' AND EXISTS
+  (SELECT 1 FROM audit a WHERE a.season_id = enrollments.season_id AND a.kid_id = enrollments.kid_id AND a.action = 'interest_answered' AND a.actor LIKE 'family:%')`)
 // Returner protection: when a division's buffer (open seats less returners still to register and the waitlist)
 // falls to protect_at or below, new players go to the waitlist. NULL = off.
 addColumn('offerings', 'protect_at', 'INTEGER')
@@ -385,6 +389,11 @@ addColumn('offerings', 'protect_at', 'INTEGER')
 if (addColumn('campaigns', 'kind', `TEXT NOT NULL DEFAULT 'standard' CHECK (kind IN ('spring','standard'))`))
   db.prepare(`UPDATE campaigns SET kind = 'spring' WHERE season_id IS NOT NULL`).run()
 addColumn('order_players', 'offer_expires_at', 'TEXT')
+// Coaches (2026-11-17): each team's coach can be emailed when a player registers for their division, and signs in
+// with this address to see their division's players. notify_coaches turns those emails off for a division.
+addColumn('teams', 'coach_email', `TEXT NOT NULL DEFAULT ''`)
+addColumn('teams', 'coach_phone', `TEXT NOT NULL DEFAULT ''`)
+addColumn('divisions', 'notify_coaches', 'INTEGER NOT NULL DEFAULT 1')
 // A sibling pick: set in advance in a team's chosen round so siblings play together; the draft skips that slot.
 addColumn('picks', 'sibling', 'INTEGER NOT NULL DEFAULT 0')
 

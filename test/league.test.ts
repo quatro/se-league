@@ -6,6 +6,7 @@ import path from 'node:path'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'seleague-'))
 process.env.DB_PATH = path.join(dir, 'league.db')
+process.env.AUTH_DB_PATH = path.join(dir, 'auth.db') // never the real shared login database
 const L = await import('../src/lib/league.js')
 const D = await import('../src/lib/drafts.js')
 const SE = await import('../src/lib/sportsengine.js')
@@ -77,9 +78,9 @@ test('rollover 2026 → 2027: returners keep teams, others move up by age, too o
   assert.equal(enr('2027', 'Nina Nine').division_id, div('2027', 'minors').id)
   assert.equal(enr('2027', 'Nina Nine').tryout, 1)
   assert.equal(enr('2027', 'Nina Nine').draft_id, draft('2027', 'majors').id)
-  // A rising 9 is assumed to be trying out for Majors too, until they register and answer.
-  assert.equal(enr('2027', 'Rook Eight').tryout, 1)
-  assert.equal(enr('2027', 'Rook Eight').draft_id, draft('2027', 'majors').id)
+  // A rising 9 isn't on the Majors board until the family asks for it (registering, or an admin ticking Tryout).
+  assert.equal(enr('2027', 'Rook Eight').tryout, 0)
+  assert.equal(enr('2027', 'Rook Eight').draft_id, null)
   assert.equal(enr('2027', 'Rook Seven').prior, 'Rookie · Cubs (2026)')
   assert.equal(enr('2027', 'Rook Seven').status, 'Expected')
 })
@@ -120,6 +121,9 @@ test('tryouts: a Minors returner trying out leaves their team; one who says no g
   // A 9 in the 9-Year-Old League can try out too.
   L.setTryout(enr('2027', 'Rook Eight').id, true, A)
   assert.deepEqual(pool('2027', 'majors'), ['Min Try', 'New Ten', 'Nina Nine', 'Rook Eight'])
+  // The Majors board says who's a 9 playing up.
+  const up = D.draftState(draft('2027', 'majors').id, true).players.filter((x) => 'playingUp' in x).map((x) => [x.name, (x as { playingUp: string }).playingUp])
+  assert.deepEqual(up, [['Rook Eight', '9-Year-Old League']])
   // Minors draft is waiting on Majors.
   assert.throws(() => D.makePick(draft('2027', 'minors').id, enr('2027', 'Min Eleven').id, A), /Waiting for the Majors draft/)
 })
@@ -147,6 +151,14 @@ test('Majors draft: picks move kids to Majors; closing sends Minors returners ba
   // Reds have one returner, the other Majors team none → 2 + 3 picks owed.
   assert.equal(st.slots.length, 5)
   D.makePick(maj, enr('2027', 'Nina Nine').id, A)
+  // A 9 drafted to Majors plays both: still counted in the 9-Year-Old League, and on the Majors roster too.
+  const nineSeats = () => JSON.stringify(L.seasonState('2027', true).divisions.find((x) => x.key === 'nine')!.seats)
+  const majCount = () => L.seasonState('2027', true).divisions.find((x) => x.key === 'majors')!.seats
+  const before = nineSeats(), majBefore = majCount()
+  D.makePick(maj, enr('2027', 'Rook Eight').id, A)
+  assert.equal(nineSeats(), before, 'still holds a 9-Year-Old League seat')
+  assert.notDeepEqual(majCount(), majBefore, 'and takes a Majors spot')
+  D.undoLast(maj, A)
   assert.equal(place('2027', 'Nina Nine').eff_division_id, div('2027', 'majors').id)
   assert.throws(() => D.makePick(maj, enr('2027', 'Min Eleven').id, A), /isn't in this draft's pool/)
   const g = L.seasonState('2027', false).groups[0]!

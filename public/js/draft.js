@@ -188,7 +188,7 @@ function renderPool() {
     const tk = taken.has(p.id), by = tk ? team(st.picks.find((x) => x.player === p.id).team)?.name : '';
     const out = OUT.includes(p.status);
     return `<li class="${tk || out ? 'taken' : ''}"><div><div class="nm kp ${out ? 'gone' : ''}" title="${esc(p.status)}"><i class="dot ${dotCls(p.status)}"></i>${p.rank != null ? `<span class="sub">${esc(p.rank)}.</span> ` : ''}${esc(p.name)}</div>
-      <div class="sub">${esc(p.status)}${p.age ? ` · Age ${esc(p.age)}` : ''}${p.prior ? ` · ${esc(p.prior)}` : ''}${p.from && !tk ? ` · <b>trying out${p.from.assumed ? ' (assumed — hasn’t registered yet)' : ''}</b>` : ''}${p.notes ? ` · ${esc(p.notes)}` : ''}${tk ? ` · ${esc(by)}` : ''}</div></div>
+      <div class="sub">${esc(p.status)}${p.age ? ` · Age ${esc(p.age)}` : ''}${p.prior ? ` · ${esc(p.prior)}` : ''}${p.playingUp && !tk ? ` · <b>playing up from the ${esc(p.playingUp)}</b>` : ''}${p.from && !tk ? ` · <b>trying out${p.from.assumed ? ' (assumed — hasn’t registered yet)' : ''}</b>` : ''}${p.notes ? ` · ${esc(p.notes)}` : ''}${tk ? ` · ${esc(by)}` : ''}</div></div>
       ${!tk && !out && canPick ? `<button class="btn primary" data-draft="${esc(p.id)}" title="Draft to ${esc(t.name)}">Draft</button>` : ''}</li>`;
   }).join('');
 }

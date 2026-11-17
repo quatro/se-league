@@ -5,6 +5,7 @@ import { db } from '../db.js'
 import { ageBreakdown } from '../lib/ages.js'
 import { clearFailures, login, logout, noteFailure, requireAdmin, requireUser, throttled } from '../lib/auth.js'
 import * as U from '../lib/users.js'
+import * as CO from '../lib/coaches.js'
 import * as D from '../lib/drafts.js'
 import * as L from '../lib/league.js'
 import { contactsFor, deleteContact, importContacts, saveContact } from '../lib/contacts.js'
@@ -41,8 +42,34 @@ function sendCsv(res: Response, name: string, rows: Cell[][]) {
 // ---------- session ----------
 api.get('/api/me', (req, res) => {
   const u = req.user
-  res.json({ user: u ? { email: u.email, name: u.name, role: u.role } : null, admin: req.admin?.username ?? null })
+  res.json({ user: u ? { email: u.email, name: u.name, role: u.role } : null, admin: req.admin?.username ?? null, board: !!req.board,
+    coachSeasons: u ? CO.coachSeasons(u.email) : [] })
 })
+/** A coach's own divisions and players. An admin can look at any coach's view with ?as=email. */
+api.get('/api/coach', requireUser, wrap((req) => {
+  const as = typeof req.query.as === 'string' && req.board ? req.query.as : req.user!.email
+  const sid = typeof req.query.season === 'string' && req.query.season ? req.query.season : CO.coachSeasons(as)[0] ?? L.currentSeason()?.id
+  if (!sid) throw new L.UserError('No season')
+  return CO.coachView(sid, as)
+}))
+// A coach manages their own team's returners (admins can act as any coach with ?as=).
+const coachAs = (req: { query: Record<string, unknown>; admin?: unknown; user?: { email: string } }) => (typeof req.query.as === 'string' && req.admin ? req.query.as : req.user!.email)
+api.post('/api/coach/intent', requireUser, wrap((req) => {
+  const b = z.object({ season: z.string(), enrollmentId: z.string(), intent: z.enum(['yes', 'no', 'unsure']) }).parse(req.body)
+  CO.coachSetIntent(b.season, coachAs(req), b.enrollmentId, b.intent)
+}))
+api.get('/api/coach/candidates', requireUser, wrap((req) => {
+  const q = z.object({ season: z.string(), team: z.string(), q: z.string().max(80) }).parse(req.query)
+  return CO.coachCandidates(q.season, coachAs(req), q.team, q.q)
+}))
+api.post('/api/coach/slot', requireUser, wrap((req) => {
+  const b = z.object({ season: z.string(), team: z.string(), kidId: z.string() }).parse(req.body)
+  CO.coachSlot(b.season, coachAs(req), b.team, b.kidId)
+}))
+api.post('/api/coach/unslot', requireUser, wrap((req) => {
+  const b = z.object({ season: z.string(), enrollmentId: z.string() }).parse(req.body)
+  CO.coachUnslot(b.season, coachAs(req), b.enrollmentId)
+}))
 // Always answers the same way, so the form can't be used to learn who is on the list.
 api.post('/api/auth/link', wrap(async (req) => {
   const b = z.object({ email: z.string().max(200), next: z.string().max(300).optional() }).parse(req.body)
@@ -81,7 +108,7 @@ api.get('/api/home', (req, res) => {
   res.json({ league: config.leagueName, leagueUrl: config.draftHosts[req.hostname] ? config.leagueUrl : '', current: cur?.id ?? null, draft })
 })
 
-api.get('/api/seasons/:id/state', requireUser, wrap((req) => L.seasonState(p(req, 'id'), !!req.admin)))
+api.get('/api/seasons/:id/state', requireUser, wrap((req) => L.seasonState(p(req, 'id'), !!req.board)))
 api.get('/api/seasons/:id/ages', requireUser, wrap((req) => ageBreakdown(p(req, 'id'))))
 api.get('/api/drafts/:id/state', requireUser, wrap((req) => D.draftState(p(req, 'id'), !!req.admin)))
 
@@ -152,7 +179,7 @@ admin.post('/seasons/:id/rosters/import', wrap((req) => {
 const divisionBody = z.object({
   name: z.string().min(1).max(60), teams: z.number().int().min(0).max(60), roster_size: z.number().int().min(1).max(40),
   coaches: optInt, min_age: optInt, max_age: optInt, se_match: z.string().max(300).optional(), group_key: z.string().max(30).optional(),
-  keep_teams: z.boolean().optional(), closed: z.boolean().optional(), notes: z.string().max(2000).optional(),
+  keep_teams: z.boolean().optional(), closed: z.boolean().optional(), notes: z.string().max(2000).optional(), notify_coaches: z.boolean().optional(),
 })
 admin.post('/seasons/:id/divisions', wrap((req) => L.saveDivision(p(req, 'id'), null, divisionBody.parse(req.body), actor(req))))
 admin.patch('/divisions/:id', wrap((req) => {
@@ -164,11 +191,29 @@ admin.put('/seasons/:id/divisions/order', wrap((req) => { L.reorderDivisions(p(r
 
 // teams
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/)
-const teamBody = z.object({ name: z.string().min(1).max(60), color: color.optional(), fg: color.optional(), wins: optInt, losses: optInt, ties: optInt, coach: z.string().max(80).optional() })
-admin.post('/divisions/:id/teams', wrap((req) => L.saveTeam(p(req, 'id'), null, teamBody.parse(req.body), actor(req))))
+const teamBody = z.object({ name: z.string().min(1).max(60), color: color.optional(), fg: color.optional(), wins: optInt, losses: optInt, ties: optInt,
+  coach: z.string().max(80).optional(), coach_email: z.string().max(120).optional(), coach_phone: z.string().max(40).optional() })
+/** Save a team; a new coach email can sign in from then on (added to Users as a plain user). */
+function saveTeamAndCoach(divisionId: string, id: string | null, body: z.infer<typeof teamBody>, who: string) {
+  const t = L.saveTeam(divisionId, id, body, who)
+  if (t.coach_email) CO.ensureCoachUser(t.coach_email, t.coach)
+  return t
+}
+admin.post('/divisions/:id/teams', wrap((req) => saveTeamAndCoach(p(req, 'id'), null, teamBody.parse(req.body), actor(req))))
 admin.patch('/teams/:id', wrap((req) => {
   const t = L.team(p(req, 'id')); if (!t) throw new L.UserError('Unknown team')
-  return L.saveTeam(t.division_id, t.id, teamBody.parse(req.body), actor(req))
+  return saveTeamAndCoach(t.division_id, t.id, teamBody.parse(req.body), actor(req))
+}))
+/** Name every team in a division and assign coaches in one go. Rows with an id update that team; the rest are added. */
+admin.put('/divisions/:id/teams', wrap((req) => {
+  const d = L.division(p(req, 'id')); if (!d) throw new L.UserError('Unknown division')
+  const rows = z.object({ teams: z.array(teamBody.extend({ id: z.string().optional() })).max(60) }).parse(req.body).teams
+  const names = rows.map((r) => r.name.trim().toLowerCase())
+  const dup = names.find((n, i) => names.indexOf(n) !== i)
+  if (dup) throw new L.UserError(`Two teams are named “${rows[names.indexOf(dup)]!.name.trim()}”`)
+  let added = 0
+  db.transaction(() => { for (const r of rows) { const { id, ...b } = r; if (!id) added++; saveTeamAndCoach(d.id, id ?? null, b, actor(req)) } })()
+  return { saved: rows.length, added, message: `${rows.length} ${rows.length === 1 ? 'team' : 'teams'} saved` }
 }))
 admin.delete('/teams/:id', wrap((req) => { L.deleteTeam(p(req, 'id'), actor(req)) }))
 admin.put('/divisions/:id/teams/order', wrap((req) => { L.setTeamOrder(p(req, 'id'), z.object({ order: z.array(z.string()) }).parse(req.body).order, actor(req)) }))
@@ -317,8 +362,8 @@ admin.post('/registrations/manual', wrap((req) => {
 }))
 
 // people allowed to sign in
-const userBody = z.object({ email: z.string().max(200), name: z.string().max(120).optional(), role: z.enum(['user', 'admin']) })
-admin.get('/users', wrap(() => ({ users: U.listUsers(), mail: U.mailOn() })))
+const userBody = z.object({ email: z.string().max(200), name: z.string().max(120).optional(), role: z.enum(['user', 'admin']), board: z.boolean().optional() })
+admin.get('/users', wrap(() => ({ users: U.listUsers().map((u) => ({ ...u, coaching: CO.coachingFor(u.email) })), mail: U.mailOn() })))
 admin.post('/users', wrap(async (req) => {
   const b = userBody.extend({ invite: z.boolean().optional() }).parse(req.body)
   const u = U.addUser(b, actor(req))

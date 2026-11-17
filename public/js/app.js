@@ -10,7 +10,10 @@ const S = { me: null, home: null, sid: null, st: null, regs: null, log: null, ta
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const dotCls = (s) => ({ Registered: 'Registered', Expected: 'Expected', 'Need to contact': 'Need', Waitlist: 'Waitlist', 'Not returning': 'Not-returning', Withdrawn: 'Withdrawn' }[s] || '');
-const isAdmin = () => !!S.me?.admin;
+// isAdmin(): may *see* the admin areas (an admin or the Board of Directors). canEdit(): may change things (admins only).
+const isAdmin = () => !!S.me?.admin || !!S.me?.board;
+const canEdit = () => !!S.me?.admin;
+const isCoach = () => isAdmin() || !!S.me?.coachSeasons?.length; // admins see the coach view too, as any coach
 const signinUrl = () => `/signin?next=${encodeURIComponent(location.pathname + location.search)}`;
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
@@ -28,6 +31,7 @@ async function call(method, url, body) {
   return data;
 }
 async function act(method, url, body, okMsg) {
+  if (method !== 'GET' && /^\/api\/admin\//.test(url) && !canEdit()) { toast('View only — Board of Directors can see this but not change it', true); return null; }
   try { const d = await call(method, url, body); if (okMsg || d?.message) toast(d?.message || okMsg); return d || {}; }
   catch (e) { toast(e.message, true); return null; }
 }
@@ -53,12 +57,18 @@ function render() {
   $('seasonTitle').textContent = `${st.season.year} Season${complete() ? ' (finished)' : ''}`;
   $('seasonSel').innerHTML = st.seasons.slice().reverse().map((s) => `<option value="${esc(s.id)}" ${s.id === S.sid ? 'selected' : ''}>${s.year}${s.id === st.current ? ' · current' : s.status === 'complete' ? ' · finished' : ''}</option>`).join('');
   document.querySelectorAll('[data-admin]').forEach((el) => (el.hidden = !isAdmin()));
+  document.querySelectorAll('[data-coach]').forEach((el) => (el.hidden = !isCoach()));
+  document.querySelector('[data-tab=coach]').textContent = isAdmin() ? 'Coach view' : 'My players';
   $('live').innerHTML = `<span class="chip ${S.live ? 'live' : 'off'}">${S.live ? 'Live' : 'Reconnecting'}</span>`;
-  $('whoami').innerHTML = `Signed in as <b>${esc(S.me.user.email)}</b>${isAdmin() ? ' (admin)' : ''} · <button id="logout">Log out</button>`;
+  const hats = [canEdit() ? 'admin' : '', S.me.board && !canEdit() ? 'Board' : '', S.me.coachSeasons?.length ? 'coach' : ''].filter(Boolean);
+  $('whoami').innerHTML = `Signed in as <b>${esc(S.me.user.email)}</b>${hats.length ? ` (${hats.join(' · ')})` : ''} · <button id="logout">Log out</button>`;
+  document.body.classList.toggle('viewonly', isAdmin() && !canEdit());
+  $('viewOnly').hidden = !(isAdmin() && !canEdit());
   const lo = $('logout'); if (lo) lo.onclick = async () => { await act('POST', '/api/logout', {}); location.href = '/signin'; };
   $('capCsv').href = `/api/seasons/${encodeURIComponent(S.sid)}/capacity.csv`;
   if (S.tab === 'seats') renderSeats();
   if (S.tab === 'drafts') renderDrafts();
+  if (S.tab === 'coach') loadCoach(); // coach.js
   // Admin tabs hold inputs; don't rebuild under someone's cursor. Re-render on blur instead.
   const ae = document.activeElement;
   const typing = ae?.closest?.('section') && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'checkbox' && ae.type !== 'file';
@@ -98,7 +108,7 @@ function renderSeats() {
     const soon = us.filter((u) => u.seats.state === 'closing');
     if (!us.length || us.every((u) => u.seats.state === 'unset')) {
       h.className = 'headline';
-      h.innerHTML = `<div class="big">No divisions set up yet</div><div class="meta">${isAdmin() ? 'Add divisions and team counts under <b>Divisions &amp; Teams</b>.' : 'Seat counts will appear here once the league sets up its divisions.'}</div>`;
+      h.innerHTML = `<div class="big">No divisions set up yet</div><div class="meta">${isAdmin() ? 'Add divisions and team counts under <b>Seasons → Divisions &amp; teams</b>.' : 'Seat counts will appear here once the league sets up its divisions.'}</div>`;
     } else if (act.length) {
       h.className = 'headline act';
       h.innerHTML = `<div class="big">Close registration: ${act.map((u) => esc(u.name)).join(', ')}</div>
@@ -302,7 +312,7 @@ document.addEventListener('mousemove', (e) => {
 
 function renderDrafts() {
   const st = S.st;
-  if (!st.drafts.length) { $('draftCards').innerHTML = `<p class="note">No draft rooms for ${st.season.year}.${isAdmin() ? ' Set one up per division under <b>Divisions &amp; Teams</b>.' : ''}</p>`; return; }
+  if (!st.drafts.length) { $('draftCards').innerHTML = `<p class="note">No draft rooms for ${st.season.year}.${isAdmin() ? ' Set one up per division under <b>Seasons → Divisions &amp; teams</b>.' : ''}</p>`; return; }
   $('draftCards').innerHTML = st.drafts.map((r) => {
     const d = div(r.division_id), prev = st.drafts.find((x) => x.next_id === r.id), next = r.next_id && draftOf(r.next_id);
     const waiting = r.status === 'open' && prev && prev.status !== 'closed';
@@ -394,76 +404,152 @@ function canTryout(k) {
   const g = groupAges();
   return !!g && k.league_age != null && k.league_age >= g.min - 1 && k.league_age < g.min;
 }
+/* ---------- players (one season) ----------
+   Opened from Seasons. Players are split by where they stand — registered, expected back from last season,
+   waiting, out — so "who's actually signed up" never mixes with "who we're expecting". Rows read; a dialog edits. */
+S.kSeg = S.kSeg || {};
+const PSEGS = [
+  ['reg', (st) => (st.season.status === 'complete' ? 'Played' : 'Registered'), (k) => k.status === 'Registered'],
+  ['yes', () => 'Said they’re coming back', (k) => k.status === 'Expected' && k.intent === 'yes'],
+  ['exp', () => 'Expected — no answer yet', (k) => k.status === 'Expected' && k.intent !== 'yes'],
+  ['call', () => 'Need a call', (k) => k.status === 'Need to contact'],
+  ['wait', () => 'Waitlist', (k) => k.status === 'Waitlist'],
+  ['out', () => 'Not returning', (k) => OUT.includes(k.status)],
+  ['all', () => 'Everyone', () => true],
+];
+const prevYear = (st) => (st.seasons.some((x) => x.year === st.season.year - 1) ? st.season.year - 1 : null);
+const SEG_HINT = {
+  reg: (st) => (st.season.status === 'complete' ? `Everyone on a ${st.season.year} roster.` : `Paid and signed up for ${st.season.year}.`),
+  yes: (st) => `Returners whose family answered “we’ll be back” — on the interest check, at registration, or through their coach. Not paid for ${st.season.year} yet, but much more likely than a default.`,
+  exp: (st) => `On the ${prevYear(st) ?? 'last'} rosters and still the right age, but nobody has told us their plans. They hold a seat by default until they register or answer.`,
+  call: () => 'Returners the league should reach out to (e.g. moved up early and likely to drop out). They hold a seat too.',
+  wait: () => 'Signed up after their division filled. Nothing charged until a spot is offered.',
+  out: () => 'Not returning or withdrawn. They don’t hold a seat.',
+  all: () => '',
+};
+function kidSeg(st) {
+  const counts = Object.fromEntries(PSEGS.map(([k, , f]) => [k, (st.kids || []).filter(f).length]));
+  let seg = S.kSeg[S.sid];
+  if (!seg || (!counts[seg] && seg !== 'all')) seg = counts.reg ? 'reg' : counts.yes ? 'yes' : counts.exp ? 'exp' : 'all';
+  return { seg, counts };
+}
 function filteredKids() {
-  const st = S.st, q = $('kSearch').value.trim().toLowerCase(), dv = $('kDiv').value, sv = $('kStatus').value, kv = $('kKind').value;
-  const order = Object.fromEntries(st.divisions.map((d, i) => [d.id, i]));
-  return (st.kids || []).filter((k) => (!q || k.name.toLowerCase().includes(q) || (k.notes || '').toLowerCase().includes(q) || (k.prior || '').toLowerCase().includes(q))
-    && (!dv || (dv === '-' ? !k.eff_division_id : k.eff_division_id === dv)) && (!sv || k.status === sv) && (kv === '' || String(k.returner) === kv)
-    && (!$('kTry').checked || k.tryout) && (!$('kMismatch').checked || (k.eff_division_id && !fitsAge(div(k.eff_division_id), k.league_age))))
-    .sort((a, b) => (order[a.eff_division_id] ?? 999) - (order[b.eff_division_id] ?? 999) || (teamOf(a.eff_team_id)?.name || '~').localeCompare(teamOf(b.eff_team_id)?.name || '~') || a.name.localeCompare(b.name));
+  const st = S.st, q = $('kSearch').value.trim().toLowerCase(), dv = $('kDiv').value;
+  const { seg } = kidSeg(st), f = PSEGS.find((x) => x[0] === seg)[2];
+  return (st.kids || []).filter((k) => f(k)
+    && (!q || k.name.toLowerCase().includes(q) || (k.notes || '').toLowerCase().includes(q) || (k.prior || '').toLowerCase().includes(q))
+    && (!dv || (dv === '-' ? !k.eff_division_id : k.eff_division_id === dv || (k.division_id === dv && k.picked_in)))
+    && (!$('kTry').checked || k.tryout) && (!$('kMismatch').checked || (k.eff_division_id && !fitsAge(div(k.eff_division_id), k.league_age))));
+}
+function playerPlace(k) {
+  if (k.picked_in) return `<b>${esc(teamOf(k.eff_team_id)?.name || '?')}</b><span class="sub">Drafted · pick #${k.pick_n}</span>`;
+  if (k.eff_team_id) return `<b>${esc(teamOf(k.eff_team_id)?.name)}</b><span class="sub">${S.st.season.status !== 'complete' && k.returner && k.returning_team_id === k.eff_team_id ? 'Back on last season’s team' : esc(div(k.eff_division_id)?.name || 'Team')}</span>`;
+  if (k.draft_id) return `<a href="${esc(draftUrl(draftOf(k.draft_id) || { key: '' }))}">${esc(div(draftOf(k.draft_id)?.division_id)?.name)} draft</a><span class="sub">In the pool</span>`;
+  return '<span class="sub">No team yet</span>';
+}
+function playerRow(k) {
+  const d = div(k.eff_division_id), home = div(k.division_id), bad = d && !fitsAge(d, k.league_age);
+  const last = k.prior ? `Last season: ${esc(k.prior)}` : k.returner ? 'Returning' : 'New player';
+  const BY = { family: 'Family', coach: 'Coach', league: 'League' };
+  const said = k.intent && k.status !== 'Registered'
+    ? `<span class="chip ${k.intent === 'yes' && k.intent_by === 'family' ? 'good' : k.intent === 'no' ? '' : 'meh'}" title="Answered ${esc((k.intent_at || '').slice(0, 10))}">${BY[k.intent_by] || 'League'}: ${k.intent === 'yes' ? 'coming back' : k.intent === 'no' ? 'not returning' : 'not sure'}</span>` : '';
+  const flags = [
+    said,
+    k.tryout ? `<span class="chip">${home && !home.group_key ? 'Majors tryout' : 'Trying out'}</span>` : '',
+    k.picked_in && home && !home.group_key && k.eff_division_id !== k.division_id ? `<span class="chip">Also ${esc(d?.name)}</span>` : '',
+    k.division_locked ? '<span class="chip" title="Placed by an admin; SportsEngine won’t move them">Pinned</span>' : '',
+    k.status_locked ? '<span class="chip" title="SportsEngine updates won’t change this status">Status locked</span>' : '',
+    bad ? `<span class="chip meh" title="${esc(d.name)} is ${esc(ageRange(d))}">Age ${k.league_age} — outside ${esc(d.name)}</span>` : '',
+    k.notes ? `<span class="chip" title="${esc(k.notes)}">Note</span>` : '',
+  ].join('');
+  return `<li class="plrow ${S.sel.has(k.id) ? 'sel' : ''} ${OUT.includes(k.status) ? 'off' : ''}" data-e="${esc(k.id)}">
+    <input type="checkbox" data-sel ${S.sel.has(k.id) ? 'checked' : ''} aria-label="Select ${esc(k.name)}">
+    <div class="plmain"><button class="plname" data-kid="${esc(k.kid_id)}">${esc(k.name)}</button>
+      <div class="plmeta">${k.league_age != null ? `Age ${k.league_age} · ` : ''}${last}</div>${flags ? `<div class="plflags">${flags}</div>` : ''}</div>
+    <div class="plplace">${playerPlace(k)}</div>
+    <div class="plstat"><i class="dot ${dotCls(k.status)}"></i>${esc(k.status)}</div>
+    <button class="btn" data-pedit>Edit</button></li>`;
 }
 function renderKids() {
-  const st = S.st;
-  const dSel = $('kDiv'), sSel = $('kStatus'), dv = dSel.value, sv = sSel.value;
-  dSel.innerHTML = '<option value="">All divisions</option><option value="-">Not in a division</option>' + st.divisions.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('');
-  sSel.innerHTML = '<option value="">All statuses</option>' + STATUSES.map((s) => `<option>${s}</option>`).join('');
-  dSel.value = dv; sSel.value = sv;
+  const st = S.st, { seg, counts } = kidSeg(st);
+  $('kTitle').textContent = `${st.season.year} players`;
+  $('kSub').textContent = `${counts.reg} ${st.season.status === 'complete' ? 'played' : 'registered'}${counts.yes ? ` · ${counts.yes} said they’re coming back` : ''}${counts.exp + counts.call ? ` · ${counts.exp + counts.call} more expected` : ''}${counts.wait ? ` · ${counts.wait} waiting` : ''}`;
+  $('kSegs').innerHTML = PSEGS.filter(([k]) => counts[k] || k === seg || k === 'all').map(([k, label]) =>
+    `<button role="tab" aria-selected="${k === seg}" data-seg="${k}">${esc(label(st))} <span class="cnt">${counts[k]}</span></button>`).join('');
+  $('kSegHint').textContent = SEG_HINT[seg](st);
+  const dSel = $('kDiv'), dv = dSel.value;
+  dSel.innerHTML = '<option value="">All divisions</option>' + st.divisions.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('') + '<option value="-">Not in a division</option>';
+  dSel.value = dv;
   $('kidsCsv').href = `/api/admin/seasons/${encodeURIComponent(S.sid)}/kids.csv`;
   const list = filteredKids();
   for (const id of [...S.sel]) if (!kidRow(id)) S.sel.delete(id);
-  const allSel = list.length && list.every((k) => S.sel.has(k.id));
-  $('kTable').innerHTML = `<tr><th><input type="checkbox" id="selAll" ${allSel ? 'checked' : ''} aria-label="Select all shown"></th><th>Kid</th><th class="num">Age</th><th>Division</th><th>Team</th><th>Type</th><th>Last season</th><th>Status</th><th title="Lock status against SportsEngine updates">Lock</th><th title="Trying out for the Majors draft">Tryout</th><th>Draft</th><th>Notes</th><th></th></tr>`
-    + (list.length ? list.map((k) => {
-      const d = div(k.eff_division_id), bad = d && !fitsAge(d, k.league_age);
-      const homeDiv = div(k.division_id);
-      const team = k.picked_in
-        ? `<b>${esc(teamOf(k.eff_team_id)?.name)}</b> <span class="tag">drafted · #${k.pick_n}</span>`
-        : homeDiv?.keep_teams ? `<select data-f="teamId" aria-label="Team"><option value="">—</option>${st.teams.filter((t) => t.division_id === homeDiv.id).map((t) => `<option value="${esc(t.id)}" ${t.id === k.team_id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>${k.tryout && k.returning_team_id ? `<span class="tag">left ${esc(teamOf(k.returning_team_id)?.name)} to try out</span>` : ''}`
-          : '<span class="sub">—</span>';
-      const pool = k.picked_in ? `<span class="sub">${esc(div(draftOf(k.picked_in)?.division_id)?.name)} draft</span>` : k.draft_id ? `<a href="${esc(draftUrl(draftOf(k.draft_id) || { key: '' }))}">${esc(div(draftOf(k.draft_id)?.division_id)?.name)}</a> pool` : '<span class="sub">—</span>';
-      return `<tr data-e="${esc(k.id)}" class="${OUT.includes(k.status) ? 'dim' : ''} ${S.sel.has(k.id) ? 'sel' : ''}">
-        <td><input type="checkbox" data-sel ${S.sel.has(k.id) ? 'checked' : ''} aria-label="Select ${esc(k.name)}"></td>
-        <td><button class="mini" data-kid="${esc(k.kid_id)}" style="border:0;background:none;padding:0;font-weight:600;text-align:left">${esc(k.name)}</button></td>
-        <td class="num ${bad ? 'warn-text' : ''}" title="${bad ? `Outside ${esc(d.name)} ${esc(ageRange(d))}` : 'League age'}">${esc(k.league_age ?? '')}</td>
-        <td><span class="dv"><select data-f="divisionId" aria-label="Division" ${k.picked_in ? 'disabled title="Drafted — change the pick in the draft room"' : ''}>${divOpts(k.division_id)}</select>${k.division_locked ? `<button class="mini pin" data-unpin title="Placed by an admin; SportsEngine won't move them. Click to let their program decide again.">Pinned ✕</button>` : ''}</span>${k.picked_in && k.eff_division_id !== k.division_id ? `<div class="tag">now ${esc(d?.name)}</div>` : ''}</td>
-        <td>${team}</td>
-        <td><select data-f="returner" aria-label="Returner or new"><option value="1" ${k.returner ? 'selected' : ''}>Returner</option><option value="0" ${k.returner ? '' : 'selected'}>New</option></select></td>
-        <td class="sub">${esc(k.prior)}</td>
-        <td><span class="kp"><i class="dot ${dotCls(k.status)}"></i><select data-f="status" aria-label="Status">${STATUSES.map((s) => `<option ${s === k.status ? 'selected' : ''}>${s}</option>`).join('')}</select></span></td>
-        <td><input type="checkbox" data-f="locked" ${k.status_locked ? 'checked' : ''} aria-label="Lock status"></td>
-        <td>${canTryout(k) ? `<input type="checkbox" data-f="tryout" ${k.tryout ? 'checked' : ''} aria-label="Trying out">` : k.tryout ? '✓' : ''}</td>
-        <td>${pool}</td>
-        <td><input type="text" data-f="notes" value="${esc(k.notes)}" style="min-width:150px" aria-label="Notes">${k.bought?.length ? `<div class="tag" title="Bought at registration">${esc(k.bought.join(' · '))}</div>` : ''}</td>
-        <td><button class="mini" data-del>Remove</button></td></tr>`;
-    }).join('') : `<tr><td colspan="13" class="note">No kids match.</td></tr>`);
+  $('kCount').textContent = `${plural(list.length, 'player')}`;
+  // Grouped by division in league order, then team, then name.
+  const groups = [...st.divisions.map((d) => ({ d, ks: list.filter((k) => k.eff_division_id === d.id) })), { d: null, ks: list.filter((k) => !k.eff_division_id) }].filter((g) => g.ks.length);
+  const byTeam = (a, b) => (teamOf(a.eff_team_id)?.name || '~').localeCompare(teamOf(b.eff_team_id)?.name || '~') || a.name.localeCompare(b.name);
+  $('kList').innerHTML = groups.length ? groups.map((g) => {
+    const all = g.ks.every((k) => S.sel.has(k.id));
+    return `<section class="plgroup"><h3 class="plghd"><label><input type="checkbox" data-selgroup="${esc(g.d?.id || '-')}" ${all ? 'checked' : ''} aria-label="Select all in ${esc(g.d?.name || 'no division')}"> ${esc(g.d?.name || 'Not in a division')}</label><span class="sub">${plural(g.ks.length, 'player')}${g.d ? ` · ${esc(ageRange(g.d))}` : ''}</span></h3>
+      <ul class="plrows">${g.ks.sort(byTeam).map(playerRow).join('')}</ul></section>`;
+  }).join('') : `<p class="note">No players match.</p>`;
   renderMoveBar();
 }
 function renderMoveBar() {
   $('moveBar').hidden = !S.sel.size;
-  $('moveCount').textContent = `${plural(S.sel.size, 'kid')} selected`;
+  $('moveCount').textContent = `${plural(S.sel.size, 'player')} selected`;
   const v = $('moveTo').value; $('moveTo').innerHTML = divOpts(v, 'Choose a division'); $('moveTo').value = v;
 }
-['kSearch', 'kDiv', 'kStatus', 'kKind', 'kTry', 'kMismatch'].forEach((id) => ($(id)[id === 'kSearch' ? 'oninput' : 'onchange'] = () => renderKids()));
+function editPlayer(k) {
+  const st = S.st, home = div(k.division_id), picked = !!k.picked_in;
+  const teams = home?.keep_teams && !picked ? st.teams.filter((t) => t.division_id === home.id) : [];
+  openDialog(`<form class="dlg dvdlg"><h2>${esc(k.name)} <span class="sub">${st.season.year}${k.league_age != null ? ` · age ${k.league_age}` : ''}</span></h2>
+    <div class="fld2">${dfld('Status', `<select name="status">${STATUSES.map((s) => `<option ${s === k.status ? 'selected' : ''}>${s}</option>`).join('')}</select>`)}
+      ${dfld('Returning or new', `<select name="returner"><option value="1" ${k.returner ? 'selected' : ''}>Returning</option><option value="0" ${k.returner ? '' : 'selected'}>New</option></select>`)}</div>
+    <label class="chk"><input type="checkbox" name="locked" ${k.status_locked ? 'checked' : ''}> <span><b>Keep this status</b> <small>SportsEngine updates won’t change it.</small></span></label>
+    <fieldset class="dvsec"><legend>Placement</legend>
+      ${dfld('Division', `<select name="division" ${picked ? 'disabled' : ''}>${divOpts(k.division_id)}</select>`, picked ? 'Drafted — change the pick in the draft room.' : 'Moving a player pins them here, so a SportsEngine registration won’t move them back.')}
+      ${teams.length ? dfld('Team', `<select name="team"><option value="">No team</option>${teams.map((t) => `<option value="${esc(t.id)}" ${t.id === k.team_id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`) : ''}
+      ${canTryout(k) ? `<label class="chk"><input type="checkbox" name="tryout" ${k.tryout ? 'checked' : ''}> <span><b>${home && !home.group_key ? 'Consider for the Majors draft' : 'Trying out for Majors'}</b> <small>${home && !home.group_key ? 'They stay in their own division either way; drafted, they play both.' : 'If not drafted, a Minors returner goes back to their team.'}</small></span></label>` : ''}
+    </fieldset>
+    ${dfld(`Notes for ${st.season.year}`, `<textarea name="notes" rows="2">${esc(k.notes || '')}</textarea>`)}
+    ${k.bought?.length ? `<p class="sub" style="margin:0">Bought at registration: ${esc(k.bought.join(' · '))}</p>` : ''}
+    <div class="row dlgfoot"><button class="btn primary" type="submit">Save</button><button class="btn" data-close>Cancel</button><button class="linkbtn" type="button" data-hist>Full history &amp; parents</button><span class="spacer"></span><button class="btn danger" type="button" data-del>Remove from ${st.season.year}</button></div>
+  </form>`, (dl) => {
+    const f = dl.querySelector('form'), el = (n) => f.elements[n];
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const b = {};
+      if (el('status').value !== k.status) b.status = el('status').value;
+      if (el('locked').checked !== !!k.status_locked) b.locked = el('locked').checked;
+      if ((el('returner').value === '1') !== !!k.returner) b.returner = el('returner').value === '1';
+      if (!picked && (el('division').value || null) !== (k.division_id || null)) b.divisionId = el('division').value || null;
+      if (el('team') && (el('team').value || null) !== (k.team_id || null)) b.teamId = el('team').value || null;
+      if (el('tryout') && el('tryout').checked !== !!k.tryout) b.tryout = el('tryout').checked;
+      if (el('notes').value !== (k.notes || '')) b.notes = el('notes').value;
+      if (!Object.keys(b).length) return dl.close();
+      if (await act('PATCH', `/api/admin/enrollments/${encodeURIComponent(k.id)}`, b, 'Saved')) dl.close();
+    };
+    f.querySelector('[data-hist]').onclick = () => { dl.close(); showKid(k.kid_id); };
+    const del = f.querySelector('[data-del]');
+    del.onclick = async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = 'Click again to remove'; return; }
+      if (await act('DELETE', `/api/admin/enrollments/${encodeURIComponent(k.id)}`, undefined, `Removed from ${st.season.year}`)) dl.close();
+    };
+  });
+}
+['kSearch', 'kDiv', 'kTry', 'kMismatch'].forEach((id) => ($(id)[id === 'kSearch' ? 'oninput' : 'onchange'] = () => renderKids()));
+$('kSegs').onclick = (e) => { const b = e.target.closest('[data-seg]'); if (!b) return; S.kSeg[S.sid] = b.dataset.seg; S.sel.clear(); renderKids(); };
 $('addKid').onclick = () => addKidForm();
-$('kTable').onchange = async (e) => {
-  if (e.target.id === 'selAll') { filteredKids().forEach((k) => (e.target.checked ? S.sel.add(k.id) : S.sel.delete(k.id))); return renderKids(); }
-  const tr = e.target.closest('[data-e]'); if (!tr) return;
-  const id = tr.dataset.e;
-  if (e.target.matches('[data-sel]')) { e.target.checked ? S.sel.add(id) : S.sel.delete(id); tr.classList.toggle('sel', e.target.checked); return renderMoveBar(); }
-  const f = e.target.dataset.f; if (!f) return;
-  let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-  if (f === 'returner') v = v === '1';
-  if (f === 'divisionId' || f === 'teamId') v = v || null;
-  const msg = f === 'divisionId' ? `Moved to ${div(v)?.name || 'no division'}` : f === 'tryout' ? (v ? 'Trying out — in the Majors draft pool' : 'Not trying out') : 'Saved';
-  if (!(await act('PATCH', `/api/admin/enrollments/${encodeURIComponent(id)}`, { [f]: v }, msg))) render();
+$('kList').onchange = (e) => {
+  const g = e.target.closest('[data-selgroup]');
+  if (g) { const id = g.dataset.selgroup; filteredKids().filter((k) => (id === '-' ? !k.eff_division_id : k.eff_division_id === id)).forEach((k) => (g.checked ? S.sel.add(k.id) : S.sel.delete(k.id))); return renderKids(); }
+  const row = e.target.closest('[data-e]');
+  if (row && e.target.matches('[data-sel]')) { e.target.checked ? S.sel.add(row.dataset.e) : S.sel.delete(row.dataset.e); row.classList.toggle('sel', e.target.checked); renderMoveBar(); }
 };
-$('kTable').onclick = async (e) => {
+$('kList').onclick = (e) => {
   const kb = e.target.closest('[data-kid]'); if (kb) return showKid(kb.dataset.kid);
-  const tr = e.target.closest('[data-e]'); if (!tr) return;
-  const id = tr.dataset.e;
-  if (e.target.matches('[data-unpin]')) return act('PATCH', `/api/admin/enrollments/${encodeURIComponent(id)}`, { divisionLocked: false }, 'Unpinned — their program decides again');
-  const dl = e.target.closest('[data-del]');
-  if (dl) { if (dl.dataset.armed) act('DELETE', `/api/admin/enrollments/${encodeURIComponent(id)}`, undefined, `Removed from ${S.st.season.year}`); else { dl.dataset.armed = '1'; dl.textContent = `Remove from ${S.st.season.year}?`; } }
+  const row = e.target.closest('[data-e]');
+  if (row && e.target.closest('[data-pedit]')) return editPlayer(kidRow(row.dataset.e));
 };
 $('moveGo').onclick = async () => {
   const to = $('moveTo').value;
@@ -472,84 +558,202 @@ $('moveGo').onclick = async () => {
 };
 $('moveClear').onclick = () => { S.sel.clear(); renderKids(); };
 
-/* ---------- divisions & teams ---------- */
+/* ---------- divisions & teams ----------
+   One card per division (Majors + Minors framed together, since they share seats). The card reads like a
+   sentence — ages, teams × roster = seats, draft — and opens to its teams. Changes happen in dialogs. */
+S.dvOpen = S.dvOpen || new Set();
+const DRAFT_FMT = { standard: 'Standard draft', blind: 'Blind draft (numbers)' };
+const plural2 = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+/** What a team still needs so its coach gets registration emails, or '' when it's done. */
+const coachTodo = (t) => (!t.coach && !t.coach_email ? 'Add a coach' : !t.coach_email ? 'Add coach’s email' : !t.coach ? 'Add coach’s name' : '');
+function divCard(d, i, st) {
+  const ts = st.teams.filter((t) => t.division_id === d.id), open = S.dvOpen.has(d.id), todo = ts.filter(coachTodo).length;
+  const ages = d.min_age != null || d.max_age != null ? `Ages ${d.min_age ?? '?'}${d.max_age !== d.min_age ? `–${d.max_age ?? '?'}` : ''}` : 'Any age';
+  const next = d.draft && draftOf(d.draft.id)?.next_id ? div(draftOf(draftOf(d.draft.id).next_id)?.division_id)?.name : null;
+  const direct = d.se_match.trim() !== '-';
+  const chips = [d.closed ? '<span class="chip meh">Registration closed</span>' : '', !direct ? '<span class="chip">Draft only</span>' : ''].join('');
+  const named = ts.length < d.teams ? `<span class="warn-text">${ts.length} of ${d.teams} named</span>` : `${plural2(ts.length, 'team')}`;
+  return `<article class="dvcard ${open ? 'open' : ''}" data-d="${esc(d.id)}">
+    <div class="dvtop">
+      <div class="dvmain">
+        <div class="lname">${esc(d.name)} ${chips}</div>
+        <div class="dvfacts"><span>${ages}</span><span><b>${d.teams}</b> ${d.teams === 1 ? 'team' : 'teams'} × <b>${d.roster_size}</b> = <b>${d.seats.capacity}</b> seats</span>${d.teams ? `${todo ? `<span class="needchip"><i aria-hidden="true"></i>${plural2(todo, 'team needs', 'teams need')} coach info</span>` : ts.length ? '<span class="okchip">✓ Every team has a coach</span>' : ''}` : ''}</div>
+        <div class="dvfacts sub"><span>${d.draft ? `${DRAFT_FMT[d.draft.format] || 'Draft'}${next ? ` → undrafted go to ${esc(next)}` : ''}` : 'No draft'}</span>${d.keep_teams ? '<span>Returners keep their team</span>' : ''}<span>${direct ? `SportsEngine: “${esc(d.se_match || d.name.toLowerCase())}”` : 'Nobody registers here directly'}</span>${d.notify_coaches ? '' : '<span>Coach emails off</span>'}</div>
+      </div>
+      <div class="dvact">
+        <button class="btn dvteamsbtn" data-dvteams aria-expanded="${open}">${named}${todo ? `<span class="todobadge" title="${plural2(todo, 'team needs', 'teams need')} coach info">${todo}</span>` : ''}<span class="caret" aria-hidden="true">▾</span></button>
+        <button class="btn" data-dvedit>Edit</button>
+        <span class="dvorder"><button class="iconbtn" data-up ${i ? '' : 'disabled'} aria-label="Move ${esc(d.name)} up" title="Move up">↑</button><button class="iconbtn" data-down ${i < st.divisions.length - 1 ? '' : 'disabled'} aria-label="Move ${esc(d.name)} down" title="Move down">↓</button></span>
+      </div>
+    </div>
+    ${open ? `<div class="dvteams"><div class="dvteamshd"><span class="sub">${todo ? `<b class="needtxt">${plural2(todo, 'team')} need${todo === 1 ? 's' : ''} a coach’s name and email</b> — coaches get an email when a player registers.` : 'Click a team to edit it.'}</span><button class="btn" data-setupteams>Name teams &amp; coaches</button></div><ul class="tmgrid">${ts.map((t) => {
+      const rec = t.wins != null || t.losses != null || t.ties != null ? `${t.wins ?? 0}–${t.losses ?? 0}${t.ties ? `–${t.ties}` : ''}` : '';
+      const need = coachTodo(t);
+      return `<li><button class="tmtile ${need ? 'need' : ''}" data-team="${esc(t.id)}" ${need ? `aria-label="${esc(t.name)}: ${esc(need)}"` : ''}>${t.color && t.color.toUpperCase() !== '#14213D' ? `<i class="sw" style="background:${esc(t.color)}"></i>` : '<i></i>'}<span class="tmname">${esc(t.name)}${rec ? ` <b class="tmrec">${rec}</b>` : ''}</span>
+        <span class="tmmeta">${need ? `<span class="tmneed">${esc(need)} →</span>` : `<span class="tmok">✓</span> ${esc(t.coach || t.coach_email)}`}</span></button></li>`;
+    }).join('')}<li><button class="tmtile add" data-addteam>+ Add team</button></li></ul></div>` : ''}
+  </article>`;
+}
 function renderDivisions() {
-  const st = S.st;
-  const num = (f, v, w = 54) => `<input type="number" data-f="${f}" value="${esc(v ?? '')}" min="0" style="width:${w}px" aria-label="${f}">`;
-  $('divTable').innerHTML = `<tr><th></th><th>Division</th><th class="num">Teams</th><th class="num">Roster</th><th class="num">Seats</th><th class="num">Coaches</th><th>Ages</th><th>SE words</th><th>Group</th><th title="Last season's players return to the same team">Keep teams</th><th>Closed</th><th>Draft</th><th></th></tr>`
-    + (st.divisions.length ? st.divisions.map((d, i) => `<tr data-d="${esc(d.id)}">
-      <td style="white-space:nowrap"><button class="mini" data-up ${i ? '' : 'disabled'} aria-label="Move up">↑</button><button class="mini" data-down ${i < st.divisions.length - 1 ? '' : 'disabled'} aria-label="Move down">↓</button></td>
-      <td><input type="text" data-f="name" value="${esc(d.name)}" style="min-width:120px" aria-label="Name"></td>
-      <td class="num">${num('teams', d.teams)}</td><td class="num">${num('roster_size', d.roster_size)}</td><td class="num"><b>${d.seats.capacity}</b></td>
-      <td class="num">${num('coaches', d.coaches)}</td>
-      <td style="white-space:nowrap">${num('min_age', d.min_age, 48)}–${num('max_age', d.max_age, 48)}</td>
-      <td><input type="text" data-f="se_match" value="${esc(d.se_match)}" placeholder="${esc(d.name.toLowerCase())}" style="min-width:150px" aria-label="SE words"></td>
-      <td><input type="text" data-f="group_key" value="${esc(d.group_key)}" style="width:64px" aria-label="Group"></td>
-      <td><input type="checkbox" data-f="keep_teams" ${d.keep_teams ? 'checked' : ''} aria-label="Keep teams"></td>
-      <td><input type="checkbox" data-f="closed" ${d.closed ? 'checked' : ''} aria-label="Registration closed"></td>
-      <td><select data-draft aria-label="Draft room"><option value="">None</option><option value="standard" ${d.draft?.format === 'standard' ? 'selected' : ''}>Standard</option><option value="blind" ${d.draft?.format === 'blind' ? 'selected' : ''}>Blind numbers</option></select>
-        ${d.draft ? `<select data-next aria-label="Undrafted go to"><option value="">then —</option>${st.drafts.filter((r) => r.id !== d.draft.id).map((r) => `<option value="${esc(r.id)}" ${draftOf(d.draft.id)?.next_id === r.id ? 'selected' : ''}>then ${esc(div(r.division_id)?.name)}</option>`).join('')}</select>` : ''}</td>
-      <td><button class="mini" data-del>Delete</button></td></tr>`).join('')
-      : `<tr><td colspan="13" class="note">No divisions in ${st.season.year} yet.</td></tr>`);
-  $('teamLists').innerHTML = st.divisions.map((d) => {
-    const ts = st.teams.filter((t) => t.division_id === d.id);
-    return `<div class="panel" data-tdiv="${esc(d.id)}"><div class="hd"><h3>${esc(d.name)}</h3><span class="sub">${ts.length} of ${d.teams} teams named</span><button class="mini" data-addteam>Add team</button></div>
-      <div class="bd scroll"><table class="kt"><tr><th>Team</th><th class="num">W</th><th class="num">L</th><th class="num">T</th><th>Coach</th><th></th></tr>
-      ${ts.map((t) => `<tr data-t="${esc(t.id)}"><td><input type="text" data-tf="name" value="${esc(t.name)}" style="width:110px" aria-label="Team name"></td>
-        ${['wins', 'losses', 'ties'].map((f) => `<td class="num"><input type="number" data-tf="${f}" value="${esc(t[f] ?? '')}" min="0" style="width:46px" aria-label="${f}"></td>`).join('')}
-        <td><input type="text" data-tf="coach" value="${esc(t.coach || '')}" style="width:100px" aria-label="Coach"></td><td><button class="mini" data-deltm>✕</button></td></tr>`).join('') || '<tr><td colspan="6" class="note">No teams named yet.</td></tr>'}
-      </table></div></div>`;
-  }).join('');
+  const st = S.st, ds = st.divisions;
+  const seats = ds.reduce((a, d) => a + d.seats.capacity, 0), teams = ds.reduce((a, d) => a + d.teams, 0);
+  $('dvTitle').textContent = `${st.season.year} divisions & teams`;
+  const todo = st.teams.filter((t) => ds.some((d) => d.id === t.division_id) && coachTodo(t)).length;
+  $('dvSummary').innerHTML = ds.length ? `${st.season.year} · ${plural2(ds.length, 'division')} · ${plural2(teams, 'team')} · ${seats} seats${todo ? ` · <button class="linkbtn needlink" data-showtodo>${plural2(todo, 'team needs', 'teams need')} coach info</button>` : ''}` : `${st.season.year}`;
+  const done = new Set(), out = [];
+  ds.forEach((d, i) => {
+    if (done.has(d.id)) return;
+    const g = d.group_key && st.groups.find((x) => x.key === d.group_key);
+    const members = g ? ds.filter((x) => x.group_key === d.group_key) : [d];
+    members.forEach((m) => done.add(m.id));
+    const cards = members.map((m) => divCard(m, ds.indexOf(m), st)).join('');
+    out.push(g && members.length > 1 ? `<section class="dvgroup"><div class="dvghd"><b>${members.map((m) => esc(m.name)).join(' + ')}</b><span class="sub">Share ${g.seats.capacity} seats and one registration</span></div>${cards}</section>` : cards);
+  });
+  $('dvList').innerHTML = out.join('') || `<p class="note">No divisions in ${st.season.year} yet. Add one to start counting seats.</p>`;
   $('rosterSeason').textContent = st.season.year;
   const v = $('rosterDefault').value; $('rosterDefault').innerHTML = divOpts(v, 'Skip that row'); $('rosterDefault').value = v;
-  $('ageCutoff').value = st.season.age_cutoff; $('warnAt').value = st.season.warn_at;
+  if (document.activeElement !== $('ageCutoff')) $('ageCutoff').value = st.season.age_cutoff;
+  if (document.activeElement !== $('warnAt')) $('warnAt').value = st.season.warn_at;
 }
-function divBody(tr) {
-  const val = (f) => tr.querySelector(`[data-f="${f}"]`);
-  const n = (f) => (val(f).value === '' ? null : parseInt(val(f).value, 10));
-  return { name: val('name').value, teams: n('teams') ?? 0, roster_size: n('roster_size') ?? 12, coaches: n('coaches'), min_age: n('min_age'), max_age: n('max_age'),
-    se_match: val('se_match').value, group_key: val('group_key').value, keep_teams: val('keep_teams').checked, closed: val('closed').checked };
+const dfld = (label, control, hint = '') => `<label class="fld"><span>${label}</span>${control}${hint ? `<small>${hint}</small>` : ''}</label>`;
+function divisionDialog(d) {
+  const st = S.st, nextId = d.draft ? draftOf(d.draft.id)?.next_id ?? '' : '';
+  const others = st.drafts.filter((r) => !d.draft || r.id !== d.draft.id);
+  const v = (x) => esc(x ?? '');
+  openDialog(`<form class="dlg dvdlg"><h2>${esc(d.name)}</h2>
+    ${dfld('Name', `<input type="text" name="name" value="${v(d.name)}" required>`)}
+    <div class="fld2">${dfld('Youngest (league age)', `<input type="number" name="min_age" value="${v(d.min_age)}" min="0" max="20">`)}${dfld('Oldest', `<input type="number" name="max_age" value="${v(d.max_age)}" min="0" max="20">`)}</div>
+    <fieldset class="dvsec"><legend>Size</legend>
+      <div class="fld2">${dfld('Teams', `<input type="number" name="teams" value="${v(d.teams)}" min="0">`)}${dfld('Players per team', `<input type="number" name="roster_size" value="${v(d.roster_size)}" min="1">`)}</div>
+      <p class="dvseats" data-seats></p>
+    </fieldset>
+    <fieldset class="dvsec"><legend>Teams &amp; draft</legend>
+      <label class="chk"><input type="checkbox" name="keep_teams" ${d.keep_teams ? 'checked' : ''}> <span><b>Returners keep their team</b> <small>Last season's players go back to the same team.</small></span></label>
+      <label class="chk"><input type="checkbox" name="notify_coaches" ${d.notify_coaches ? 'checked' : ''}> <span><b>Email coaches when a player registers</b> <small>Every coach in ${d.group_key ? 'this group' : 'this division'} with an email gets a note for each registration and waitlist signup.</small></span></label>
+      <div class="fld2">${dfld('Draft room', `<select name="draft"><option value="">No draft</option>${Object.entries(DRAFT_FMT).map(([k, l]) => `<option value="${k}" ${d.draft?.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
+        ${dfld('Undrafted players go to', `<select name="next" ${d.draft ? '' : 'disabled'}><option value="">Nowhere — they stay unplaced</option>${others.map((r) => `<option value="${esc(r.id)}" ${r.id === nextId ? 'selected' : ''}>The ${esc(div(r.division_id)?.name)} draft</option>`).join('')}</select>`, d.draft ? '' : 'Set up a draft room first.')}</div>
+      ${dfld('Group', `<input type="text" name="group_key" value="${v(d.group_key)}" placeholder="None" style="max-width:140px">`, 'Divisions with the same group (e.g. 10-12 for Majors + Minors) share seats and one registration.')}
+    </fieldset>
+    <fieldset class="dvsec"><legend>Registration</legend>
+      <label class="chk"><input type="checkbox" name="closed" ${d.closed ? 'checked' : ''}> <span><b>Closed to new registrations</b></span></label>
+      ${dfld('SportsEngine words', `<input type="text" name="se_match" value="${v(d.se_match)}" placeholder="${v(d.name.toLowerCase())}">`, 'Comma-separated words matched against the program a family picks in SportsEngine. Use <code>-</code> when nobody registers here directly (Majors).')}
+    </fieldset>
+    <div class="row dlgfoot"><button class="btn primary" type="submit">Save</button><button class="btn" data-close>Cancel</button><span class="spacer"></span><button class="btn danger" type="button" data-del>Delete division</button></div>
+  </form>`, (dl) => {
+    const f = dl.querySelector('form'), el = (n) => f.elements[n];
+    const n = (k) => (el(k).value === '' ? null : parseInt(el(k).value, 10));
+    const seatsLine = () => { const t = n('teams') ?? 0, r = n('roster_size') ?? 0; f.querySelector('[data-seats]').innerHTML = `${t} × ${r} = <b>${t * r} seats</b>`; };
+    seatsLine(); f.addEventListener('input', seatsLine);
+    el('draft').onchange = () => { el('next').disabled = !el('draft').value; };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const id = encodeURIComponent(d.id);
+      const body = { name: el('name').value, teams: n('teams') ?? 0, roster_size: n('roster_size') ?? 12, coaches: d.coaches, min_age: n('min_age'), max_age: n('max_age'),
+        se_match: el('se_match').value, group_key: el('group_key').value.trim(), keep_teams: el('keep_teams').checked, closed: el('closed').checked, notify_coaches: el('notify_coaches').checked };
+      try {
+        await call('PATCH', `/api/admin/divisions/${id}`, body);
+        const fmt = el('draft').value;
+        if (fmt && (fmt !== d.draft?.format || el('next').value !== (nextId || ''))) await call('PUT', `/api/admin/divisions/${id}/draft`, { format: fmt, nextId: el('next').value || null });
+        else if (!fmt && d.draft) await call('DELETE', `/api/admin/drafts/${encodeURIComponent(d.draft.id)}`);
+        toast('Division saved'); dl.close();
+      } catch (err) { toast(err.message, true); }
+    };
+    const del = f.querySelector('[data-del]');
+    del.onclick = async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = 'Click again to delete'; return; }
+      if (await act('DELETE', `/api/admin/divisions/${encodeURIComponent(d.id)}`, undefined, 'Division deleted')) dl.close();
+    };
+  });
 }
-$('divTable').onchange = async (e) => {
-  const tr = e.target.closest('[data-d]'); if (!tr) return;
-  const id = tr.dataset.d, d = div(id);
-  if (e.target.matches('[data-draft]')) {
-    const f = e.target.value;
-    const ok = f ? await act('PUT', `/api/admin/divisions/${encodeURIComponent(id)}/draft`, { format: f }, 'Draft room saved')
-      : d.draft ? await act('DELETE', `/api/admin/drafts/${encodeURIComponent(d.draft.id)}`, undefined, 'Draft room removed') : {};
-    if (!ok) render();
+/* Name every team and assign its coach in one sheet: one row per team the division plans for. */
+function teamsSetupDialog(d) {
+  const ts = S.st.teams.filter((t) => t.division_id === d.id);
+  const rows = [...ts, ...Array.from({ length: Math.max(0, d.teams - ts.length) }, () => ({}))];
+  const line = (t, i) => `<div class="tsrow" data-row="${esc(t.id || '')}">
+    <span class="tsn">${i + 1}</span>
+    <input type="text" name="name" value="${esc(t.name || '')}" placeholder="Team name" aria-label="Team ${i + 1} name">
+    <input type="text" name="coach" value="${esc(t.coach || '')}" placeholder="Coach name" aria-label="Team ${i + 1} coach" autocomplete="off">
+    <input type="email" name="coach_email" value="${esc(t.coach_email || '')}" placeholder="coach@email.com" aria-label="Team ${i + 1} coach email" autocomplete="off"></div>`;
+  openDialog(`<form class="dlg tsdlg"><h2>${esc(d.name)} teams</h2>
+    <p class="note" style="margin:0">${d.teams} ${d.teams === 1 ? 'team is' : 'teams are'} planned. Coaches with an email are told when players register and can sign in to see them. Leave a row blank to skip it.</p>
+    <div class="tshead" aria-hidden="true"><span></span><span>Team</span><span>Coach</span><span>Coach email</span></div>
+    <div class="tsrows">${rows.map(line).join('')}</div>
+    <button type="button" class="linkbtn" data-addrow style="justify-self:start">+ Another team</button>
+    <p class="err-text" data-err></p>
+    <div class="row dlgfoot"><button class="btn primary" type="submit">Save teams</button><button class="btn" data-close>Cancel</button></div>
+  </form>`, (dl) => {
+    const f = dl.querySelector('form'), list = f.querySelector('.tsrows');
+    f.querySelector('[data-addrow]').onclick = () => { list.insertAdjacentHTML('beforeend', line({}, list.children.length)); list.lastElementChild.querySelector('input').focus(); };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const out = [];
+      for (const r of list.children) {
+        const g = (k) => r.querySelector(`[name=${k}]`).value.trim();
+        if (!g('name')) { if (g('coach') || g('coach_email')) { f.querySelector('[data-err]').textContent = `Row ${out.length + 1}: give the team a name.`; return; } continue; }
+        out.push({ ...(r.dataset.row ? { id: r.dataset.row } : {}), name: g('name'), coach: g('coach'), coach_email: g('coach_email') });
+      }
+      try { const res = await call('PUT', `/api/admin/divisions/${encodeURIComponent(d.id)}/teams`, { teams: out }); toast(res.message || 'Saved'); dl.close(); }
+      catch (err) { f.querySelector('[data-err]').textContent = err.message; }
+    };
+  });
+}
+function teamDialog(t) {
+  const v = (x) => esc(x ?? '');
+  openDialog(`<form class="dlg dvdlg"><h2>${esc(t.name)} <span class="sub">${esc(div(t.division_id)?.name)}</span></h2>
+    ${dfld('Team name', `<input type="text" name="name" value="${v(t.name)}" required>`)}
+    <fieldset class="dvsec"><legend>Coach</legend>
+      ${dfld('Name', `<input type="text" name="coach" value="${v(t.coach)}" autocomplete="off">`)}
+      <div class="fld2">${dfld('Email', `<input type="email" name="coach_email" value="${v(t.coach_email)}" autocomplete="off">`)}${dfld('Phone', `<input type="tel" name="coach_phone" value="${v(t.coach_phone)}" autocomplete="off">`)}</div>
+      <small class="sub">With an email, the coach is told when players register for ${esc(div(t.division_id)?.name)} and can sign in to see them.</small></fieldset>
+    <fieldset class="dvsec"><legend>Record</legend><div class="fld3">${['wins', 'losses', 'ties'].map((k) => dfld(k[0].toUpperCase() + k.slice(1), `<input type="number" name="${k}" value="${v(t[k])}" min="0">`)).join('')}</div>
+      <small class="sub">Sets next season's draft order and shows in each kid's history.</small></fieldset>
+    <div class="row dlgfoot"><button class="btn primary" type="submit">Save</button><button class="btn" data-close>Cancel</button><span class="spacer"></span><button class="btn danger" type="button" data-del>Remove team</button></div>
+  </form>`, (dl) => {
+    const f = dl.querySelector('form'), n = (k) => (f.elements[k].value === '' ? null : parseInt(f.elements[k].value, 10));
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      if (await act('PATCH', `/api/admin/teams/${encodeURIComponent(t.id)}`, { name: f.elements.name.value, coach: f.elements.coach.value, coach_email: f.elements.coach_email.value.trim(), coach_phone: f.elements.coach_phone.value.trim(), wins: n('wins'), losses: n('losses'), ties: n('ties') }, 'Team saved')) dl.close();
+    };
+    const del = f.querySelector('[data-del]');
+    del.onclick = async () => {
+      if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = 'Click again to remove'; return; }
+      if (await act('DELETE', `/api/admin/teams/${encodeURIComponent(t.id)}`, undefined, 'Team removed')) dl.close();
+    };
+  });
+}
+$('dvSummary').onclick = (e) => {
+  if (!e.target.closest('[data-showtodo]')) return;
+  // Open every division with a team missing coach info, then go to the first one.
+  S.st.teams.filter(coachTodo).forEach((t) => S.dvOpen.add(t.division_id));
+  renderDivisions();
+  const first = document.querySelector('#dvList .tmtile.need');
+  if (first) { first.scrollIntoView({ block: 'center', behavior: 'smooth' }); first.focus({ preventScroll: true }); }
+};
+$('dvList').onclick = async (e) => {
+  const card = e.target.closest('[data-d]'); if (!card) return;
+  const id = card.dataset.d, b = e.target.closest('button'); if (!b) return;
+  if (b.matches('[data-dvteams]')) { S.dvOpen.has(id) ? S.dvOpen.delete(id) : S.dvOpen.add(id); return renderDivisions(); }
+  if (b.matches('[data-dvedit]')) return divisionDialog(div(id));
+  if (b.matches('[data-setupteams]')) return teamsSetupDialog(div(id));
+  if (b.matches('[data-team]')) return teamDialog(teamOf(b.dataset.team));
+  if (b.matches('[data-addteam]')) {
+    const r = await act('POST', `/api/admin/divisions/${encodeURIComponent(id)}/teams`, { name: 'New team' }, 'Team added');
+    if (r?.id) setTimeout(() => teamOf(r.id) && teamDialog(teamOf(r.id)), 300);
     return;
   }
-  if (e.target.matches('[data-next]')) { if (!(await act('PUT', `/api/admin/divisions/${encodeURIComponent(id)}/draft`, { nextId: e.target.value || null }, 'Saved'))) render(); return; }
-  if (!e.target.dataset.f) return;
-  if (!(await act('PATCH', `/api/admin/divisions/${encodeURIComponent(id)}`, divBody(tr), 'Saved'))) render();
+  if (b.matches('[data-up],[data-down]')) {
+    const ids = S.st.divisions.map((d) => d.id), i = ids.indexOf(id), j = b.matches('[data-up]') ? i - 1 : i + 1;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    return act('PUT', `/api/admin/seasons/${encodeURIComponent(S.sid)}/divisions/order`, { order: ids });
+  }
 };
-$('divTable').onclick = async (e) => {
-  const tr = e.target.closest('[data-d]'); if (!tr) return;
-  const ids = S.st.divisions.map((d) => d.id), i = ids.indexOf(tr.dataset.d);
-  if (e.target.matches('[data-up],[data-down]')) { const j = e.target.matches('[data-up]') ? i - 1 : i + 1; [ids[i], ids[j]] = [ids[j], ids[i]]; return act('PUT', `/api/admin/seasons/${encodeURIComponent(S.sid)}/divisions/order`, { order: ids }); }
-  const dl = e.target.closest('[data-del]');
-  if (dl) { if (dl.dataset.armed) act('DELETE', `/api/admin/divisions/${encodeURIComponent(tr.dataset.d)}`, undefined, 'Division deleted'); else { dl.dataset.armed = '1'; dl.textContent = 'Delete?'; } }
-};
-$('teamLists').onchange = async (e) => {
-  const tr = e.target.closest('[data-t]'); if (!tr) return;
-  const t = teamOf(tr.dataset.t), body = { name: t.name };
-  tr.querySelectorAll('[data-tf]').forEach((el) => { const f = el.dataset.tf; body[f] = el.type === 'number' ? (el.value === '' ? null : parseInt(el.value, 10)) : el.value; });
-  if (!(await act('PATCH', `/api/admin/teams/${encodeURIComponent(t.id)}`, body, 'Team saved'))) render();
-};
-$('teamLists').onclick = (e) => {
-  const p = e.target.closest('[data-tdiv]'); if (!p) return;
-  if (e.target.matches('[data-addteam]')) return act('POST', `/api/admin/divisions/${encodeURIComponent(p.dataset.tdiv)}/teams`, { name: 'New team' }, 'Team added');
-  const del = e.target.closest('[data-deltm]');
-  if (del) { const id = del.closest('[data-t]').dataset.t; if (del.dataset.armed) act('DELETE', `/api/admin/teams/${encodeURIComponent(id)}`, undefined, 'Team removed'); else { del.dataset.armed = '1'; del.textContent = 'Remove?'; } }
-};
-$('addDiv').onclick = () => openDialog(`<form class="dlg" id="df"><h2>Add a ${S.st.season.year} division</h2>
-  <div class="row"><label for="dName">Name</label><input type="text" id="dName" required style="flex:1" placeholder="e.g. Minors"></div>
-  <div class="row"><label for="dTeams">Teams</label><input type="number" id="dTeams" min="0" value="0" style="width:80px"><label for="dRoster" style="min-width:0">× roster</label><input type="number" id="dRoster" min="1" value="12" style="width:80px"></div>
-  <div class="row"><label for="dMin">League ages</label><input type="number" id="dMin" min="0" style="width:70px" aria-label="Youngest">–<input type="number" id="dMax" min="0" style="width:70px" aria-label="Oldest"></div>
-  <div class="row"><label for="dMatch">SE words</label><input type="text" id="dMatch" style="flex:1" placeholder="defaults to the name"></div>
+$('addDiv').onclick = () => openDialog(`<form class="dlg dvdlg" id="df"><h2>Add a ${S.st.season.year} division</h2>
+  ${dfld('Name', '<input type="text" id="dName" required placeholder="e.g. Minors">')}
+  <div class="fld2">${dfld('Youngest (league age)', '<input type="number" id="dMin" min="0" max="20">')}${dfld('Oldest', '<input type="number" id="dMax" min="0" max="20">')}</div>
+  <div class="fld2">${dfld('Teams', '<input type="number" id="dTeams" min="0" value="0">')}${dfld('Players per team', '<input type="number" id="dRoster" min="1" value="12">')}</div>
+  ${dfld('SportsEngine words', '<input type="text" id="dMatch" placeholder="Defaults to the name">', 'Matched against the program a family picks in SportsEngine.')}
   <p class="err-text" id="dErr"></p>
-  <div class="row"><button class="btn primary" type="submit">Add</button><span class="spacer"></span><button class="btn" data-close>Cancel</button></div></form>`, (d) => {
+  <div class="row dlgfoot"><button class="btn primary" type="submit">Add division</button><button class="btn" data-close>Cancel</button></div></form>`, (d) => {
   const n = (id) => { const v = d.querySelector(id).value; return v === '' ? null : parseInt(v, 10); };
   d.querySelector('#df').onsubmit = async (e) => {
     e.preventDefault();
@@ -574,13 +778,14 @@ $('warnAt').onchange = (e) => act('PATCH', `/api/admin/seasons/${encodeURICompon
 let rollPreview = null;
 async function renderSeasons() {
   const st = S.st;
-  $('seasonTable').innerHTML = '<tr><th>Season</th><th>Status</th><th></th></tr>' + st.seasons.slice().reverse().map((s) => `<tr data-s="${esc(s.id)}">
+  $('seasonTable').innerHTML = '<tr><th>Season</th><th>Status</th><th></th><th></th></tr>' + st.seasons.slice().reverse().map((s) => `<tr data-s="${esc(s.id)}">
     <td><b>${s.year}</b></td>
     <td><select data-status aria-label="Status"><option value="planning" ${s.status === 'planning' ? 'selected' : ''}>Planning</option><option value="active" ${s.status === 'active' ? 'selected' : ''}>Playing</option><option value="complete" ${s.status === 'complete' ? 'selected' : ''}>Finished</option></select></td>
-    <td>${s.id === st.current ? '<span class="chip good">Current</span>' : `<button class="mini" data-cur>Make current</button>`}</td></tr>`).join('');
+    <td>${s.id === st.current ? '<span class="chip good">Current</span>' : `<button class="mini" data-cur>Make current</button>`}</td>
+    <td class="seasonacts"><button class="btn" data-players>Players</button><button class="btn" data-divs>Divisions &amp; teams</button></td></tr>`).join('');
   const next = st.seasons.find((s) => s.year === st.season.year + 1);
   $('rollTitle').textContent = `Finish ${st.season.year} → start ${st.season.year + 1}`;
-  if (next) { $('rollBox').innerHTML = `<p>${st.season.year + 1} already exists. Kids added to ${st.season.year} rosters later (Divisions &amp; Teams → Paste rosters) are carried into it automatically.</p>`; return; }
+  if (next) { $('rollBox').innerHTML = `<p>${st.season.year + 1} already exists. Kids added to ${st.season.year} rosters later (Seasons → Divisions &amp; teams → Import rosters) are carried into it automatically.</p>`; return; }
   if (rollPreview?.from !== S.sid) { rollPreview = { from: S.sid, loading: true }; rollPreview = await call('GET', `/api/admin/seasons/${encodeURIComponent(S.sid)}/rollover`).catch(() => null); }
   const p = rollPreview;
   if (!p || p.loading) { $('rollBox').innerHTML = '<p class="note">Loading…</p>'; return; }
@@ -596,7 +801,17 @@ async function renderSeasons() {
   };
 }
 $('seasonTable').onchange = (e) => { const tr = e.target.closest('[data-s]'); if (tr && e.target.matches('[data-status]')) act('PATCH', `/api/admin/seasons/${encodeURIComponent(tr.dataset.s)}`, { status: e.target.value }, 'Saved'); };
-$('seasonTable').onclick = (e) => { const tr = e.target.closest('[data-s]'); if (tr && e.target.matches('[data-cur]')) act('POST', `/api/admin/seasons/${encodeURIComponent(tr.dataset.s)}/current`, {}, `${tr.dataset.s} is now the current season`); };
+$('seasonTable').onclick = async (e) => {
+  const tr = e.target.closest('[data-s]'); if (!tr) return;
+  if (e.target.matches('[data-cur]')) act('POST', `/api/admin/seasons/${encodeURIComponent(tr.dataset.s)}/current`, {}, `${tr.dataset.s} is now the current season`);
+  // A season's players and its divisions & teams open from here (no top-level tabs): switch to that season, then show them.
+  const to = e.target.matches('[data-divs]') ? 'divisions' : e.target.matches('[data-players]') ? 'kids' : null;
+  if (to) {
+    if (S.sid !== tr.dataset.s) { S.sid = tr.dataset.s; S.sel.clear(); try { localStorage.setItem('league-season', S.sid); } catch { /* private */ } await refresh(); }
+    setTab(to);
+  }
+};
+document.querySelectorAll('[data-back-seasons]').forEach((b) => (b.onclick = () => setTab('seasons')));
 $('addSeason').onclick = async () => {
   const y = parseInt($('newYear').value, 10); if (!y) return toast('Enter a year', true);
   if (await act('POST', '/api/admin/seasons', { year: y }, `${y} added`)) { S.sid = String(y); $('newYear').value = ''; refresh(); }
@@ -679,12 +894,14 @@ $('logRefresh').onclick = loadLog;
 $('logTable').onclick = (e) => { const kb = e.target.closest('[data-kid]'); if (kb) showKid(kb.dataset.kid); };
 
 /* ---------- tabs ---------- */
-const VIEWS = ['seats', 'drafts', 'kids', 'campaigns', 'finance', 'outreach', 'regs', 'divisions', 'seasons', 'users', 'log'];
+const VIEWS = ['seats', 'drafts', 'coach', 'kids', 'campaigns', 'finance', 'outreach', 'regs', 'divisions', 'seasons', 'users', 'log'];
 function setTab(t) {
-  const btn = document.querySelector(`[data-tab="${t}"]`);
-  if (!btn || (btn.hasAttribute('data-admin') && !isAdmin())) t = 'seats';
+  // Divisions & teams has no tab of its own: it opens from Seasons, which stays highlighted.
+  const UNDER_SEASONS = ['divisions', 'kids'];
+  const btn = document.querySelector(`[data-tab="${UNDER_SEASONS.includes(t) ? 'seasons' : t}"]`);
+  if (!btn || (btn.hasAttribute('data-admin') && !isAdmin()) || (btn.hasAttribute('data-coach') && !isCoach())) t = 'seats';
   S.tab = t;
-  document.querySelectorAll('#tabs button').forEach((x) => x.setAttribute('aria-selected', x.dataset.tab === t));
+  document.querySelectorAll('#tabs button').forEach((x) => x.setAttribute('aria-selected', x.dataset.tab === (UNDER_SEASONS.includes(t) ? 'seasons' : t)));
   VIEWS.forEach((v) => ($('view-' + v).hidden = v !== t));
   try { localStorage.setItem('league-tab', t); } catch { /* private mode */ }
   if (t === 'regs') loadRegs();
@@ -692,6 +909,7 @@ function setTab(t) {
   if (t === 'outreach') OS.loadedFor = null;
   if (t === 'users') US.loaded = false;
   if (t === 'finance') loadFinance(); // finance.js — loads on tab open, and again after each action
+  if (t === 'coach') loadCoach(); // coach.js
   render();
 }
 document.querySelectorAll('#tabs button').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
@@ -726,6 +944,8 @@ function connect() {
   const m = /^\/kids\/([^/]+)/.exec(location.pathname);
   let t = 'seats';
   try { t = localStorage.getItem('league-tab') || 'seats'; } catch { /* private mode */ }
+  // A coach's email link (/coach) opens straight to their players; so does a coach signing in with nothing saved.
+  if (location.pathname === '/coach' || (!isAdmin() && isCoach() && t === 'seats')) t = 'coach';
   setTab(t);
   if (m && isAdmin()) showKid(decodeURIComponent(m[1]));
   connect();

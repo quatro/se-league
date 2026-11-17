@@ -6,6 +6,10 @@
 <title>SE Baseball League</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700;800&family=Public+Sans:wght@400;500;600;700&display=swap">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/img/crest-32.png">
+<link rel="apple-touch-icon" href="/img/crest-180.png">
+<meta name="theme-color" content="#27236d">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
@@ -14,25 +18,25 @@
 
 <div class="wrap" id="app" hidden>
   <header class="top">
-    <h1><small id="league">SE Baseball</small><span id="seasonTitle">League</span></h1>
+    <h1 class="brand"><img class="crest" src="/img/crest-180.png" alt="" width="60" height="60"><span class="brandtx"><small id="league">SE Baseball</small><span id="seasonTitle">League</span></span></h1>
     <div class="navr">
       <div class="tools"><span id="live"></span><label class="seasonsel" for="seasonSel">Season <select id="seasonSel"></select></label></div>
       <div class="who-am-i" id="whoami"></div>
       <div class="tabs" role="tablist" id="tabs">
         <button role="tab" data-tab="seats" aria-selected="true">Seats</button>
         <button role="tab" data-tab="drafts" aria-selected="false">Drafts</button>
-        <button role="tab" data-tab="kids" aria-selected="false" data-admin hidden>Kids</button>
+        <button role="tab" data-tab="coach" aria-selected="false" data-coach hidden>My players</button>
         <button role="tab" data-tab="campaigns" aria-selected="false" data-admin hidden>Registration</button>
         <button role="tab" data-tab="finance" aria-selected="false" data-admin hidden>Finance</button>
         <button role="tab" data-tab="outreach" aria-selected="false" data-admin hidden>Outreach</button>
         <button role="tab" data-tab="regs" aria-selected="false" data-admin hidden>SE inbox<span class="badge" id="regBadge" hidden></span></button>
-        <button role="tab" data-tab="divisions" aria-selected="false" data-admin hidden>Divisions &amp; Teams</button>
         <button role="tab" data-tab="seasons" aria-selected="false" data-admin hidden>Seasons</button>
         <button role="tab" data-tab="users" aria-selected="false" data-admin hidden>Users</button>
         <button role="tab" data-tab="log" aria-selected="false" data-admin hidden>Activity</button>
       </div>
     </div>
   </header>
+  <p class="viewonlybar" id="viewOnly" hidden><b>Board of Directors · view only.</b> You can see every area of the league; changes are made by an admin.</p>
 
   <!-- SEATS -->
   <section id="view-seats" class="overview">
@@ -55,26 +59,24 @@
   <!-- KIDS (admin) -->
   <section id="view-kids" hidden>
     <div class="panel">
-      <div class="hd"><h2>Kids</h2>
-        <div class="row">
-          <input type="search" id="kSearch" placeholder="Search" style="width:160px" aria-label="Search kids">
-          <select id="kDiv" style="width:auto" aria-label="Division"></select>
-          <select id="kStatus" style="width:auto" aria-label="Status"></select>
-          <select id="kKind" style="width:auto" aria-label="Returner or new"><option value="">Returners &amp; new</option><option value="1">Returners</option><option value="0">New</option></select>
-          <label class="row" style="gap:4px;font-weight:500;white-space:nowrap"><input type="checkbox" id="kTry"> Trying out</label>
-          <label class="row" style="gap:4px;font-weight:500;white-space:nowrap"><input type="checkbox" id="kMismatch"> Age doesn't fit</label>
-          <button class="btn" id="addKid">Add kid</button>
-          <a class="btn" id="kidsCsv" href="#">CSV</a>
-        </div>
-      </div>
+      <div class="hd dvhd"><div><button class="linkbtn backlink" data-back-seasons>← Seasons</button><h2 id="kTitle">Players</h2><div class="sub" id="kSub"></div></div>
+        <div class="row"><a class="btn" id="kidsCsv" href="#">Download CSV</a><button class="btn primary" id="addKid">Add player</button></div></div>
       <div class="bd">
-        <p class="note">Edits save as you leave each field. Tick kids and use <b>Move to</b> to put them in another division; a move made here is <b>pinned</b> so a SportsEngine registration won't undo it. <b>Trying out</b> puts a kid in the Majors draft pool; a Minors returner who tries out gives up their Minors team and, if not drafted, goes into the Minors draft. Click a name for that kid's history across seasons.</p>
-        <div class="scroll"><table class="kt" id="kTable"></table></div>
+        <div class="segs" id="kSegs" role="tablist" aria-label="Which players"></div>
+        <p class="note seghint" id="kSegHint"></p>
+        <div class="kfilters">
+          <input type="search" id="kSearch" placeholder="Search names, notes, last team" aria-label="Search players">
+          <select id="kDiv" aria-label="Division"></select>
+          <label class="chkpill"><input type="checkbox" id="kTry"> Trying out</label>
+          <label class="chkpill"><input type="checkbox" id="kMismatch"> Age outside division</label>
+          <span class="sub" id="kCount"></span>
+        </div>
+        <div id="kList" class="plist"></div>
         <div class="movebar" id="moveBar" hidden>
           <b id="moveCount"></b>
           <label for="moveTo">Move to</label><select id="moveTo"></select>
-          <input type="text" id="moveReason" placeholder="Reason (optional)" style="width:200px" aria-label="Reason">
-          <button class="btn" id="moveGo">Move</button>
+          <input type="text" id="moveReason" placeholder="Reason (optional)" aria-label="Reason">
+          <button class="btn primary" id="moveGo">Move</button>
           <button class="btn" id="moveClear">Clear</button>
         </div>
       </div>
@@ -130,28 +132,31 @@
   </section>
 
   <!-- DIVISIONS & TEAMS (admin) -->
-  <section id="view-divisions" class="grid2" hidden>
-    <div class="panel wide">
-      <div class="hd"><h2>Divisions</h2><button class="btn primary" id="addDiv">Add division</button></div>
+  <section id="view-divisions" hidden>
+    <div class="panel"><div class="hd dvhd"><div><button class="linkbtn backlink" id="dvBack" data-back-seasons>← Seasons</button><h2 id="dvTitle">Divisions &amp; teams</h2><div class="sub" id="dvSummary"></div></div><button class="btn primary" id="addDiv">Add division</button></div>
       <div class="bd">
-        <p class="note"><b>Teams</b> comes from field slots and coaches; seats = teams × roster. <b>SE words</b> are matched against the program a family picks in SportsEngine (<code>-</code> = nobody registers here directly, e.g. Majors). Divisions with the same <b>Group</b> share one registration program and are counted together (Majors + Minors). <b>Keep teams</b> sends last season's players back to the same team. <b>Draft</b> sets up that division's draft room.</p>
-        <div class="scroll"><table class="kt" id="divTable"></table></div>
+        <div id="dvList" class="dvlist"></div>
+        <details class="explain"><summary>How divisions work</summary>
+          <p><b>Seats</b> are teams × players per team. <b>Divisions in the same group</b> (Majors + Minors) share their seats and one registration, and are counted together. <b>Keep teams</b> sends last season's players back to the same team. <b>Records</b> set next season's draft order (“Order by last season's records” puts the worst record first) and show in each kid's history. <b>SportsEngine words</b> match the program a family picks in SportsEngine to this division.</p></details>
       </div>
     </div>
-    <div class="panel wide"><div class="hd"><h2>Teams &amp; records</h2></div><div class="bd">
-      <p class="note">Records feed next season's draft order (“Order by last season's records” in a draft room puts the worst record first) and each kid's history.</p>
-      <div id="teamLists" class="grid2"></div>
-    </div></div>
-    <div class="panel"><div class="hd"><h2>Paste rosters</h2></div><div class="bd">
-      <p class="note">Rosters for <b id="rosterSeason"></b>: a header row with <b>Name</b> (or First / Last), <b>Birthdate</b> or <b>Age</b>, <b>Division</b>, <b>Team</b>. Kids are matched to their existing record by name and birthdate, so each child keeps one history. For a finished season they're recorded as having played, and carried into the next season as returners.</p>
-      <textarea id="rosterBox" rows="7" placeholder="Name,Birthdate,Division,Team&#10;Jamie Smith,2016-05-02,Minors,Tigers"></textarea>
-      <div class="row"><label for="rosterDefault" style="min-width:0">If no division given</label><select id="rosterDefault" style="width:auto"></select><button class="btn primary" id="rosterImport">Add rosters</button></div>
-    </div></div>
-    <div class="panel"><div class="hd"><h2>Season settings</h2></div><div class="bd">
-      <div class="row"><label for="ageCutoff">League age date</label><input type="text" id="ageCutoff" style="width:100px" placeholder="MM-DD"></div>
-      <p class="note">League age is a kid's age on this month-day of the season year (04-30 = “turns 5 or 6 before May 1”).</p>
-      <div class="row"><label for="warnAt">“Closing soon” at</label><input type="number" id="warnAt" min="0" max="50" style="width:100px"><span class="note">open seats or fewer</span></div>
-    </div></div>
+    <div class="grid2">
+      <div class="panel"><div class="hd"><h2>Season settings</h2></div><div class="bd dvsettings">
+        <label class="fld"><span>League age date</span><input type="text" id="ageCutoff" placeholder="MM-DD" style="max-width:120px"><small>A kid's league age is their age on this month-day of the season year. 04-30 means “age on April 30”.</small></label>
+        <label class="fld"><span>Show “Closing soon” at</span><span class="row" style="gap:8px"><input type="number" id="warnAt" min="0" max="50" style="max-width:90px"><span class="sub">open seats or fewer</span></span></label>
+      </div></div>
+      <div class="panel"><div class="hd"><h2>Import rosters</h2></div><div class="bd">
+        <p class="note" style="margin-top:0">Paste <b id="rosterSeason"></b> rosters from a spreadsheet: a header row with <b>Name</b> (or First / Last), <b>Birthdate</b> or <b>Age</b>, <b>Division</b>, <b>Team</b>. Each kid is matched to their existing record by name and birthdate, so they keep one history.</p>
+        <textarea id="rosterBox" rows="5" placeholder="Name,Birthdate,Division,Team&#10;Jamie Smith,2016-05-02,Minors,Tigers"></textarea>
+        <div class="row" style="margin-top:8px"><label for="rosterDefault" style="min-width:0">Rows with no division</label><select id="rosterDefault" style="width:auto"></select><span class="spacer"></span><button class="btn primary" id="rosterImport">Add rosters</button></div>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- COACH: their division's players -->
+  <section id="view-coach" hidden>
+    <div class="panel"><div class="hd dvhd"><div><h2>My players</h2><div class="sub" id="coachSub"></div></div><div id="coachAs"></div></div>
+      <div class="bd" id="coachBody"><p class="note">Loading…</p></div></div>
   </section>
 
   <!-- SEASONS (admin) -->
@@ -159,7 +164,7 @@
     <div class="panel"><div class="hd"><h2>Seasons</h2></div><div class="bd">
       <table class="kt" id="seasonTable"></table>
       <div class="row"><input type="number" id="newYear" placeholder="Year" style="width:100px" aria-label="Year"><button class="btn" id="addSeason">Add an earlier season</button></div>
-      <p class="note">Add an earlier season only to record history (paste its rosters on Divisions &amp; Teams). New seasons come from finishing the current one.</p>
+      <p class="note">Add an earlier season only to record history (open its divisions &amp; teams and import rosters). New seasons come from finishing the current one.</p>
     </div></div>
     <div class="panel"><div class="hd"><h2 id="rollTitle">Finish the season</h2></div><div class="bd" id="rollBox"></div></div>
   </section>
@@ -189,7 +194,8 @@
       <form class="bd" id="userAdd" style="display:grid;gap:10px">
         <label>Email <input type="email" id="uEmail" required autocomplete="off"></label>
         <label>Name <input type="text" id="uName" autocomplete="off" placeholder="Optional"></label>
-        <label>Role <select id="uRole"><option value="user">User — sees seat counts and draft boards</option><option value="admin">Admin — sees and edits everything</option></select></label>
+        <label>Access <select id="uRole"><option value="user">Member — seat counts, draft boards (and their team, if they coach)</option><option value="admin">Admin — sees and changes everything</option></select></label>
+        <label class="chk"><input type="checkbox" id="uBoard"> <span><b>Board of Directors</b> <small>Sees every admin area, changes nothing.</small></span></label>
         <label class="chk"><input type="checkbox" id="uInvite" checked> Email them a sign-in link now</label>
         <div class="row"><button class="btn primary" type="submit">Add</button></div>
         <p class="note" id="uMailNote" hidden></p>
@@ -198,7 +204,7 @@
     <div class="panel wide">
       <div class="hd"><h2>People who can sign in</h2></div>
       <div class="bd"><div class="scroll"><table class="kt" id="userTable"></table></div>
-        <p class="note">Signing in is by emailed link only — anyone not on this list sees nothing but the public registration forms. Changing someone's role or email signs them out.</p></div>
+        <p class="note">Signing in is by emailed link only — anyone not on this list sees nothing but the public registration forms. One entry per person, with every hat they wear: <b>Admin</b> changes things, <b>Board</b> sees all the admin areas, and <b>Coach</b> comes from being named on a team (Seasons → Divisions &amp; teams). Changing someone's access or email signs them out.</p></div>
     </div>
   </section>
 
@@ -215,5 +221,6 @@
 <script src="/js/outreach.js"></script>
 <script src="/js/users.js"></script>
 <script src="/js/finance.js"></script>
+<script src="/js/coach.js"></script>
 </body>
 </html>

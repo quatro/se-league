@@ -338,7 +338,10 @@ export function applyIntent(seasonId: string, kidId: string, intent: Intent, act
   const e = db.prepare('SELECT * FROM enrollments WHERE season_id = ? AND kid_id = ?').get(seasonId, kidId) as (Enrollment & { intent: string }) | undefined
   if (!e || e.status === 'Registered') return false
   const prev = e.intent
-  db.prepare(`UPDATE enrollments SET intent = ?, intent_at = ? WHERE id = ?`).run(intent, new Date().toISOString(), e.id)
+  const by = actor.startsWith('family:') ? 'family' : actor.startsWith('coach:') ? 'coach' : 'league'
+  // A coach or the league passing on an answer never overwrites what the family told us directly.
+  if (by !== 'family' && (e as { intent_by?: string }).intent_by === 'family' && prev && prev !== intent) throw new UserError('The family already answered this themselves — ask the league to change it')
+  db.prepare(`UPDATE enrollments SET intent = ?, intent_at = ?, intent_by = ? WHERE id = ?`).run(intent, new Date().toISOString(), by, e.id)
   const undoNo = e.status === 'Not returning' && prev === 'no'
   const to = intent === 'no' ? (['Expected', 'Need to contact'].includes(e.status) ? 'Not returning' : null)
     : intent === 'yes' ? (e.status === 'Need to contact' || undoNo ? 'Expected' : null)

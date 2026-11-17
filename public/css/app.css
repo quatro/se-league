@@ -1,7 +1,7 @@
 /* SE League app — palette and type shared by the league pages and every draft room. */
 :root{
   --bg:#f3f1ec; --card:#fffdf8; --ink:#14213d; --muted:#5d6577; --line:#d9d4c7;
-  --stitch:#c8102e; --clock:#ffd23f; --clock-ink:#3b2f00; --full:#e7e3d9; --ok:#1f7a4d; --warn:#b5651d; --blue:#2f6db5;
+  --stitch:#c8102e; --brand:#27236d; --brand-orange:#fc5300; --clock:#ffd23f; --clock-ink:#3b2f00; --full:#e7e3d9; --ok:#1f7a4d; --warn:#b5651d; --blue:#2f6db5;
   --display:"Saira Condensed","Arial Narrow",Arial,sans-serif; --body:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   color-scheme:light;
   /* Charts: seasons are categorical (fixed order), ages within a division an ordinal blue ramp. Validated against --card. */
@@ -9,7 +9,7 @@
   --age1:#86b6ef; --age2:#3987e5; --age3:#1c5cab; --age-unk:#c9c5ba;
 }
 @media (prefers-color-scheme:dark){:root{
-  --bg:#0e1626; --card:#16213a; --ink:#eef1f7; --muted:#9aa5bd; --line:#2b3a5c; --stitch:#ff4d61; --clock:#ffd23f; --clock-ink:#2a2100; --full:#1b2742; --ok:#4cc38a; --warn:#f0a35e; --blue:#79a8ff; color-scheme:dark;
+  --bg:#0e1626; --card:#16213a; --ink:#eef1f7; --muted:#9aa5bd; --line:#2b3a5c; --stitch:#ff4d61; --brand:#8f8ae6; --brand-orange:#ff7a33; --clock:#ffd23f; --clock-ink:#2a2100; --full:#1b2742; --ok:#4cc38a; --warn:#f0a35e; --blue:#79a8ff; color-scheme:dark;
   --yr1:#3987e5; --yr2:#d95926; --yr3:#199e70; --yr4:#c98500;
   --age1:#1c5cab; --age2:#3987e5; --age3:#86b6ef; --age-unk:#3b4763}}
 *{box-sizing:border-box}
@@ -21,7 +21,7 @@ button{cursor:pointer}
 a{color:var(--blue)}
 [hidden]{display:none!important}
 .wrap{max-width:1400px;margin:0 auto;padding-block:16px;display:grid;gap:16px}
-header.top{display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:12px;border-bottom:3px double var(--stitch);padding-bottom:10px}
+header.top{display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:12px;border-bottom:3px solid var(--brand-orange);box-shadow:0 3px 0 var(--brand);padding-bottom:10px}
 h1{font-family:var(--display);font-weight:800;font-size:2.1rem;letter-spacing:.02em;margin:0;line-height:1;text-transform:uppercase}
 h1 small{display:block;font-size:.85rem;letter-spacing:.14em;color:var(--muted);font-weight:600}
 h2{font-family:var(--display);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:1.15rem;margin:0}
@@ -119,7 +119,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px 
 dialog{border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);padding:0;width:min(520px,calc(100% - 32px))}
 dialog::backdrop{background:rgba(10,15,30,.45)}
 dialog form,dialog .dlg{padding:16px;display:grid;gap:10px}
-.gate{max-width:380px;margin:12vh auto 0;background:var(--card);border:1px solid var(--line);border-top:6px solid var(--stitch);border-radius:4px;padding:20px;display:grid;gap:12px}
+.gate{max-width:380px;margin:12vh auto 0;background:var(--card);border:1px solid var(--line);border-top:6px solid var(--brand-orange);border-radius:4px;padding:20px;display:grid;gap:12px}
 .gate h1{font-size:1.7rem}
 .err-text{color:var(--stitch);font-weight:600;min-height:1.2em;margin:0}
 .warnbox{border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--card));padding:8px 12px;border-radius:4px}
@@ -661,3 +661,196 @@ button.rcard:hover,button.rcard:focus-visible{border-color:var(--ink);outline:no
 .tryinfo span{color:var(--muted);font-size:.9rem}
 .reg .missing{outline:2px solid var(--stitch);outline-offset:3px;border-radius:4px}
 .tryq .sub{display:block;margin-top:1px}
+
+/* Registration orders: notes behind an icon */
+.notecell{width:1%;min-width:36px;max-width:240px}
+.notebtn{display:inline-flex;align-items:flex-start;gap:6px;border:1px solid transparent;background:none;color:var(--muted);padding:4px;border-radius:4px;cursor:pointer;text-align:left;font:inherit;font-size:.82rem}
+.notebtn:hover,.notebtn:focus-visible{border-color:var(--line);color:var(--ink);background:var(--bg)}
+.notebtn.has{color:var(--ink);max-width:240px}
+.notebtn.has span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.notebtn svg{flex:none;margin-top:1px}
+.noteedit{min-width:220px;display:grid;gap:6px}
+.noteedit textarea{width:100%;font:inherit;font-size:.85rem;padding:6px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* Divisions & teams */
+#view-divisions:not([hidden]){display:grid;gap:16px}
+.dvhd{align-items:flex-start}
+.dvhd h2{margin:0}
+.dvlist{display:grid;gap:10px;margin-bottom:12px}
+.dvcard{border:1px solid var(--line);border-radius:6px;background:var(--card)}
+.dvcard.open{border-color:color-mix(in srgb,var(--ink) 35%,var(--line))}
+.dvtop{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;padding:14px 16px}
+.dvmain{display:grid;gap:4px;min-width:0}
+.dvfacts{display:flex;flex-wrap:wrap;gap:4px 0;font-size:.88rem}
+.dvfacts>span+span::before{content:"·";margin:0 8px;color:var(--muted)}
+.dvfacts b{font-variant-numeric:tabular-nums}
+.dvfacts.sub{color:var(--muted);font-size:.82rem}
+.dvact{display:flex;gap:6px;align-items:center}
+.dvteamsbtn{display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+.dvteamsbtn .caret{font-size:.7rem;transition:transform .15s}
+.dvcard.open .dvteamsbtn .caret{transform:rotate(180deg)}
+.dvorder{display:inline-flex;margin-left:4px}
+.iconbtn{border:1px solid transparent;background:none;color:var(--muted);width:28px;height:28px;border-radius:4px;cursor:pointer;font:inherit}
+.iconbtn:hover:not(:disabled),.iconbtn:focus-visible{border-color:var(--line);color:var(--ink);background:var(--bg)}
+.iconbtn:disabled{opacity:.3;cursor:default}
+.dvteams{border-top:1px solid var(--line);padding:12px 16px 14px;background:color-mix(in srgb,var(--bg) 55%,var(--card))}
+.tmgrid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
+.tmtile{width:100%;display:grid;grid-template-columns:12px minmax(0,1fr);column-gap:8px;row-gap:1px;align-items:center;text-align:left;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);font:inherit;cursor:pointer}
+.tmtile:hover,.tmtile:focus-visible{border-color:var(--ink)}
+.tmtile .sw{width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ink) 25%,transparent)}
+.tmname{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tmmeta{grid-column:2;font-size:.78rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tmmeta b{color:var(--ink);font-variant-numeric:tabular-nums}
+.tmtile.add{display:flex;justify-content:center;color:var(--blue);font-weight:600;border-style:dashed;min-height:52px}
+.dvgroup{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;padding:10px;display:grid;gap:8px;background:color-mix(in srgb,var(--blue) 5%,var(--card))}
+.dvghd{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;padding:0 4px}
+.dvsec{border:0;border-top:1px solid var(--line);padding:10px 0 0;margin:4px 0 0;display:grid;gap:10px}
+.dvsec legend{font-family:var(--display);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:.82rem;color:var(--muted);padding:0 6px 0 0}
+.fld3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:end}
+.dvseats{margin:0;font-size:.9rem;color:var(--muted)}
+.dvseats b{color:var(--ink)}
+.dvsettings{display:grid;gap:14px}
+@media (max-width:700px){
+  .dvtop{grid-template-columns:minmax(0,1fr);gap:10px}
+  .dvact{flex-wrap:wrap}
+  .dvorder{margin-left:auto}
+  .tmgrid{grid-template-columns:1fr 1fr}
+  .dvfacts.sub{display:grid;gap:2px}
+  .dvfacts.sub>span+span::before{content:none}
+  .fld3{grid-template-columns:1fr 1fr 1fr;gap:8px}
+}
+
+.dvteamshd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+.tmrec{font-weight:600;color:var(--muted);font-size:.8rem;margin-left:4px}
+.nocoach{color:var(--muted);font-style:italic}
+/* Name teams & coaches */
+dialog:has(.tsdlg){width:min(760px,calc(100% - 24px))}
+.tshead,.tsrow{display:grid;grid-template-columns:24px minmax(0,1fr) minmax(0,1fr) minmax(0,1.3fr);gap:8px;align-items:center}
+.tshead span{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700}
+.tsrows{display:grid;gap:6px;max-height:min(52vh,520px);overflow:auto;padding:2px}
+.tsn{color:var(--muted);font-size:.82rem;text-align:right;font-variant-numeric:tabular-nums}
+.tsrow input{width:100%;min-width:0}
+@media (max-width:700px){
+  .tshead{display:none}
+  .tsrow{grid-template-columns:20px 1fr 1fr;row-gap:4px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .tsrow [name=coach_email]{grid-column:2/4}
+}
+/* Coach view */
+.cvstats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:8px}
+.cvstats>div{border:1px solid var(--line);border-radius:6px;padding:10px 12px;display:grid;gap:2px}
+.cvstats b{font-family:var(--display);font-size:1.9rem;line-height:1}
+.cvstats span{color:var(--muted);font-size:.82rem}
+.cvtable td{vertical-align:top}
+.backlink{font-size:.82rem;margin-bottom:4px;display:inline-block}
+
+/* Season players */
+.seasonacts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.segs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.segs button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:5px 12px;font:inherit;font-weight:600;font-size:.88rem;cursor:pointer}
+.segs button .cnt{color:var(--muted);font-weight:600;margin-left:4px;font-variant-numeric:tabular-nums}
+.segs button[aria-selected=true]{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.segs button[aria-selected=true] .cnt{color:inherit;opacity:.75}
+.seghint{margin:0 0 12px;min-height:1em}
+.kfilters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+.kfilters input[type=search]{flex:1 1 220px;max-width:340px}
+.kfilters select{width:auto}
+.chkpill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-weight:500;font-size:.86rem;cursor:pointer;white-space:nowrap}
+.chkpill:has(input:checked){border-color:var(--ink);background:color-mix(in srgb,var(--ink) 8%,var(--card))}
+.plist{display:grid;gap:18px}
+.plghd{display:flex;align-items:baseline;gap:10px;margin:0 0 6px;font-size:1rem}
+.plghd label{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+.plrows{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:6px}
+.plrow{display:grid;grid-template-columns:20px minmax(0,1.6fr) minmax(0,1fr) 150px auto;gap:12px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+.plrow:last-child{border-bottom:0}
+.plrow.sel{background:color-mix(in srgb,var(--blue) 9%,var(--card))}
+.plrow.off .plname,.plrow.off .plplace b{color:var(--muted)}
+.plmain{display:grid;gap:2px;min-width:0}
+.plname{all:unset;font-weight:700;cursor:pointer;justify-self:start}
+.plname:hover,.plname:focus-visible{text-decoration:underline}
+.plmeta{color:var(--muted);font-size:.84rem}
+.plflags{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+.plflags .chip{font-size:.66rem;padding:1px 7px}
+.plplace{display:grid;gap:1px;min-width:0}
+.plplace .sub{font-size:.78rem}
+.plstat{display:flex;align-items:center;gap:6px;font-size:.88rem}
+.movebar{margin-top:14px;border-radius:8px;padding:10px 14px;box-shadow:0 6px 24px rgba(10,15,30,.25)}
+@media (max-width:760px){
+  .plrow{grid-template-columns:20px minmax(0,1fr) auto;row-gap:6px}
+  .plrow .plplace{grid-column:2;grid-row:2}
+  .plrow .plstat{grid-column:2;grid-row:3}
+  .plrow [data-pedit]{grid-column:3;grid-row:1/4;align-self:start}
+}
+
+/* League branding: the SE crest beside every page title */
+h1.brand{display:flex;align-items:center;gap:14px}
+h1.brand .crest{width:60px;height:60px;flex:none;border-radius:50%;box-shadow:0 0 0 2px var(--card),0 2px 8px rgba(10,15,40,.25)}
+h1.brand .brandtx{display:block}
+.gatecrest{display:block;width:84px;height:84px;margin:-62px auto 10px;border-radius:50%;box-shadow:0 0 0 4px var(--card),0 4px 14px rgba(10,15,40,.3)}
+.gate{margin-top:16vh}
+@media (max-width:600px){h1.brand{gap:10px}h1.brand .crest{width:46px;height:46px}}
+
+/* Teams missing coach info: an amber "to do" state that reads at a glance */
+.needchip{color:var(--warn);font-weight:700}
+.needchip i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warn);margin-right:6px;vertical-align:1px}
+.okchip{color:var(--ok);font-weight:600}
+.todobadge{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 6px;margin-left:8px;border-radius:10px;background:var(--warn);color:#fff;font-size:.75rem;font-weight:700}
+.needtxt{color:var(--warn)}
+.needlink{color:var(--warn);font-weight:700}
+.tmtile.need{border-color:var(--warn);border-left-width:4px;background:color-mix(in srgb,var(--warn) 9%,var(--card))}
+.tmtile.need:hover,.tmtile.need:focus-visible{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 16%,var(--card))}
+.tmneed{color:var(--warn);font-weight:700}
+.tmok{color:var(--ok);font-weight:700}
+@media (prefers-color-scheme:dark){.todobadge{color:#1b1200}}
+
+/* Coach: team returners + answers */
+.cvteam{border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:16px 0;background:var(--card)}
+.cvteamhd{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:6px;margin-bottom:8px}
+.cvteamhd h3{margin:0;font-size:1.1rem}
+.cvrets{list-style:none;margin:0;padding:0}
+.cvret{display:grid;grid-template-columns:minmax(0,1fr) 170px auto auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.cvret.done b{color:var(--muted)}
+.cvconf{display:grid;font-weight:600;font-size:.9rem}
+.cvconf small{font-weight:500;color:var(--muted);font-size:.74rem}
+.cvconf.hi{color:var(--ok)}
+.cvconf.none{color:var(--muted);font-weight:500}
+.cvopts{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.cvans{border:0;background:var(--card);color:var(--ink);font:inherit;font-size:.84rem;font-weight:600;padding:7px 12px;cursor:pointer;min-height:36px}
+.cvans+.cvans{border-left:1px solid var(--line)}
+.cvans:hover{background:color-mix(in srgb,var(--ink) 6%,var(--card))}
+.cvans.yes[aria-pressed=true]{background:var(--ok);color:#fff}
+.cvans.unsure[aria-pressed=true]{background:var(--warn);color:#fff}
+.cvans.no[aria-pressed=true]{background:var(--muted);color:var(--card)}
+.cvadd{margin-top:12px;display:grid;gap:6px;max-width:460px}
+.cvadd label{font-size:.86rem;font-weight:600}
+.cvhits{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.cvhit{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:1fr auto;column-gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;cursor:pointer}
+.cvhit .sub{grid-column:1}
+.cvhit .cvhitadd{grid-column:2;grid-row:1/3;align-self:center;color:var(--blue);font-weight:700;font-size:.85rem}
+.cvhit:hover,.cvhit:focus-visible{border-color:var(--ink)}
+.cvhit.off{cursor:default;opacity:.7}
+.cvguide{border:1px solid var(--brand-orange);border-left:6px solid var(--brand-orange);border-radius:8px;padding:14px 16px;margin-bottom:16px;background:color-mix(in srgb,var(--brand-orange) 6%,var(--card))}
+.cvguide h3{margin:4px 0 6px;font-size:1.15rem}
+.cvguide p{margin:0 0 12px;max-width:62ch;line-height:1.5}
+.cvgsteps{display:flex;align-items:center;gap:6px}
+.cvgsteps i{width:22px;height:4px;border-radius:2px;background:var(--line)}
+.cvgsteps i.on{background:var(--brand-orange)}
+.cvgsteps .sub{margin-left:6px}
+.cvspot{outline:3px solid var(--brand-orange);outline-offset:4px;border-radius:8px;transition:outline-color .3s}
+@media (max-width:760px){
+  .cvret{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}
+  .cvret .cvopts{grid-column:1/-1;justify-self:start}
+}
+
+/* Roles: Board of Directors sees the admin areas, view only */
+.viewonlybar{margin:10px 0 0;padding:8px 12px;border:1px solid var(--brand);border-left:5px solid var(--brand);border-radius:6px;background:color-mix(in srgb,var(--brand) 7%,var(--card));font-size:.9rem}
+.hat{display:inline-flex;align-items:center;gap:6px;font-weight:600;white-space:nowrap}
+/* View only: hide the controls that change things (the server refuses them anyway). */
+body.viewonly :is(.btn.primary,.btn.danger,.linkbtn.danger,[data-del],[data-pedit],[data-dvedit],[data-setupteams],[data-addteam],.dvorder,#addKid,#addDiv,#newCamp,#moveBar,[data-cur],#addSeason,#newYear,[data-uremove],[data-ucopy],[data-uemail],#userAdd){display:none !important}
+body.viewonly :is(#view-campaigns,#view-divisions,#view-seasons,#view-users,#view-outreach,#view-finance,#view-regs) :is(input:not([type=search]),select:not(#seasonSel):not(#kDiv):not(#campSel):not(#coachPick),textarea){pointer-events:none;opacity:.75}
+body.viewonly .tmtile{pointer-events:none}
+/* Keep the row grid intact: the hidden controls still hold their columns. */
+body.viewonly .plrow :is([data-sel],[data-pedit]){display:block !important;visibility:hidden}
+body.viewonly .plghd [data-selgroup]{display:none !important}
+/* A Board member who also coaches still manages their own team. */
+body.viewonly #coachBody:not(.mine) :is(.cvopts,.cvadd,[data-unslot]){display:none !important}

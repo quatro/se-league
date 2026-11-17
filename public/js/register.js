@@ -446,9 +446,10 @@ function tryoutHtml(sec, offering, d) {
   const star = ' <span aria-hidden="true" style="color:var(--stitch)">*</span>';
   const opt = (val, label, sub) => `<label><input type="radio" name="${name}" value="${val}" required ${v === (val === 'yes') ? 'checked' : ''}> <span>${label}<span class="sub">${sub}</span></span></label>`;
   const info = (title, text) => `<div class="tryinfo"><b>${title}</b><span>${text}</span></div>`;
-  if (offering.tryout === 'playup') return `<fieldset class="choice tryq"><legend>Will ${first} try out for Majors?${star}</legend>
-    ${opt('yes', 'Yes — try out for Majors', `If not drafted to Majors, they play in the ${esc(offering.name)}.`)}
-    ${opt('no', `No — play in the ${esc(offering.name)}`, 'No tryout needed.')}</fieldset>`;
+  if (offering.tryout === 'playup') return info(`${first} is in the ${esc(offering.name)}`, `That’s certain, whatever you choose below. Every 9-year-old goes to the same tryout. Being drafted to a Majors team is optional — and a player who is drafted plays on both teams.`)
+    + `<fieldset class="choice tryq"><legend>Should ${first} be considered for the Majors draft?${star}</legend>
+    ${opt('yes', 'Yes — consider them for Majors too', `If a Majors team drafts them, they play Majors and the ${esc(offering.name)}. If not, they play in the ${esc(offering.name)}.`)}
+    ${opt('no', `No — ${esc(offering.name)} only`, `They play in the ${esc(offering.name)}.`)}</fieldset>`;
   const gc = groupCaseOf(sec, offering), ages = offering.min_age != null ? `${offering.min_age}–${offering.max_age}` : '';
   if (gc === 'majors') return info(`Returning to Majors${m?.team ? ` — ${esc(m.team)}` : ''}`, `${first} stays on their Majors team. No tryout needed.`);
   if (gc === 'minors') {
@@ -500,7 +501,7 @@ function missing(sec) {
   if (sec._matches?.length && !sec._returning) out.push(`whether they played in ${C.campaign.year - 1}`);
   if (!o) { if (p.birthdate) out.push('division'); return out; }
   if (shutFor(o, matchOf(sec))) out.push(`a division with room (${o.name} is full)`);
-  if (asksTryout(sec, o) && p.tryout === undefined) out.push(groupCaseOf(sec, o) === 'rising' ? 'Majors or Minors only' : 'the Majors tryout question');
+  if (asksTryout(sec, o) && p.tryout === undefined) out.push(groupCaseOf(sec, o) === 'rising' ? 'Majors or Minors only' : o.tryout === 'playup' ? 'whether to consider them for Majors' : 'the Majors tryout question');
   for (const q of C.questions.filter((q) => q.scope === 'player' && q.required && applies(q, o.id) && !(q.new_only && isReturner(sec)))) {
     const v = p.answers[q.id];
     if (v === undefined || v === '' || v === false || (Array.isArray(v) && !v.length)) out.push(q.label.toLowerCase().replace(/[?:]$/, ''));

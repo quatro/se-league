@@ -6,6 +6,7 @@ import path from 'node:path'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'seleague-o-'))
 process.env.DB_PATH = path.join(dir, 'league.db')
+process.env.AUTH_DB_PATH = path.join(dir, 'auth.db') // never the real shared login database
 // Never send real mail or touch Stripe from tests, whatever .env says.
 process.env.RESEND_API_KEY = 're_test_fake'
 process.env.MAIL_FROM = 'SE Baseball <test@league.test>'

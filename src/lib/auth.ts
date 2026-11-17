@@ -57,10 +57,14 @@ declare global {
       user?: { id: number; email: string; name: string; role: Role }
       /** Set only for admins; username is what the audit log records. */
       admin?: { id: number; username: string }
+      /** Board of Directors (or an admin): may view every admin area. Only admins change anything. */
+      board?: boolean
     }
   }
 }
 export type Role = 'user' | 'admin'
+export type ExtraRole = 'board'
+export const hasRole = (userId: number, role: ExtraRole) => !!db.prepare('SELECT 1 FROM user_roles WHERE user_id = ? AND role = ?').get(userId, role)
 export const SESSION_COOKIE = 'league_session'   // emailed-link sessions, shared by every league tool
 const LINK_MINUTES = 20
 const LINK_SESSION_DAYS = 30
@@ -73,12 +77,13 @@ export function loadAuth(req: Request, _res: Response, next: NextFunction) {
     if (u) {
       req.user = u
       if (u.role === 'admin') req.admin = { id: u.id, username: u.email }
+      req.board = u.role === 'admin' || hasRole(u.id, 'board')
     }
   }
   if (!req.user && c[ADMIN_COOKIE]) {
     const row = db.prepare(`SELECT a.id, a.username FROM sessions s JOIN admins a ON a.id = s.admin_id
       WHERE s.token_hash = ? AND s.expires_at > ?`).get(sha(c[ADMIN_COOKIE]), Date.now()) as { id: number; username: string } | undefined
-    if (row) { req.admin = row; req.user = { id: -row.id, email: row.username, name: row.username, role: 'admin' } }
+    if (row) { req.admin = row; req.board = true; req.user = { id: -row.id, email: row.username, name: row.username, role: 'admin' } }
   }
   next()
 }
@@ -128,7 +133,8 @@ export function requireUser(req: Request, res: Response, next: NextFunction) {
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: 'login_required' })
-  if (!req.admin) return res.status(403).json({ error: 'Admins only' })
+  // The Board of Directors sees every admin area but can't change anything.
+  if (!req.admin && !(req.board && req.method === 'GET')) return res.status(403).json({ error: req.board ? 'Board members can view but not change anything — ask an admin' : 'Admins only' })
   if (req.method !== 'GET') {
     const origin = req.headers.origin
     const host = req.headers['x-forwarded-host'] ?? req.headers.host

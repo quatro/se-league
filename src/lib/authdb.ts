@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS login_links (
   used_at    INTEGER
 );
 
+-- Extra roles a person holds, beyond users.role (which other league tools read, so admin stays there).
+-- One person, many hats: 'board' = Board of Directors (sees the admin areas, changes nothing).
+-- Coaching isn't stored here: you coach because a team names your email.
+CREATE TABLE IF NOT EXISTS user_roles (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role    TEXT NOT NULL CHECK (role IN ('board')),
+  PRIMARY KEY (user_id, role)
+);
+
 CREATE TABLE IF NOT EXISTS user_sessions (
   token_hash TEXT PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

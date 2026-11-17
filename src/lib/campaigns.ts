@@ -5,6 +5,7 @@ import {
   UserError, type Kid, type Season,
 } from './league.js'
 import { addContact } from './contacts.js'
+import { notifyCoaches } from './coaches.js'
 import { balancePaid, createPlan, firstPaymentIn, installmentsFor, payLink, planFor, saveCard, today } from './plans.js'
 import { mailConfigured, sendBatch } from './mailer.js'
 import { createCheckout, getCheckout, stripeConfigured, stripeMode, type LineItem } from './stripe.js'
@@ -539,7 +540,7 @@ export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote
     const tc = offeringTryout(o)
     const gc = tc === 'group' && returner ? groupCase(c, returning) : null
     if (tc === 'playup' || gc === 'minors' || gc === 'rising') {
-      if (typeof p.tryout !== 'boolean') throw new UserError(`${name}: ${gc === 'rising' ? 'say whether they want to be considered for Majors' : 'say whether they’ll try out for Majors'}`)
+      if (typeof p.tryout !== 'boolean') throw new UserError(`${name}: ${gc === 'minors' ? 'say whether they’ll try out for Majors' : 'say whether they want to be considered for Majors'}`)
       answers[TRYOUT_ANSWER] = p.tryout
     } else if (tc === 'group' && !gc) answers[TRYOUT_ANSWER] = true
     out.push({ input: { ...p, birthdate: dob }, returning, offering: o, age, waitlisted, heldSeat: ownSeat, answers, lines })
@@ -654,6 +655,8 @@ function place(o: Order, p: OrderPlayer, c: Campaign, status: 'Registered' | 'Wa
     `${c.name}: ${status === 'Registered' ? 'paid' : 'waitlisted'}${bought.length ? ` — ${bought.map((b) => `${b.name}${b.qty > 1 ? ` ×${b.qty}` : ''}`).join(', ')}` : ''}`)
   audit('registration', status === 'Registered' ? 'registered_online' : 'waitlisted_online', c.season_id, k.id,
     { campaign: c.name, program: off.name, order: o.id, bought: bought.map((b) => `${b.name}${b.qty > 1 ? ` ×${b.qty}` : ''}`) })
+  // Tell the division's coaches — after this transaction commits, and never holding up the payment.
+  if (enrollmentId) { const id = enrollmentId; setImmediate(() => { void notifyCoaches(id) }) }
 }
 
 /** Payment confirmed (or nothing to pay): register every pending player. Safe to call twice. */

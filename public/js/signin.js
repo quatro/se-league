@@ -12,7 +12,7 @@ async function post(url, body) {
   if (!r.ok) throw new Error(data?.error || `Request failed (${r.status})`);
   return data;
 }
-const head = (league, title) => `<h1><small style="display:block;font-size:.8rem;letter-spacing:.14em;color:var(--muted)">${esc(league)}</small>${esc(title)}</h1>`;
+const head = (league, title) => `<img class="gatecrest" src="/img/crest-180.png" alt="" width="84" height="84"><h1><small style="display:block;font-size:.8rem;letter-spacing:.14em;color:var(--muted)">${esc(league)}</small>${esc(title)}</h1>`;
 
 function emailForm(league) {
   $('#gate').innerHTML = `<form class="gate" id="f">${head(league, 'Sign in')}

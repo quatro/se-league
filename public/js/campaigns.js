@@ -256,10 +256,36 @@ function shownOrders() {
   return os.filter((o) => o.status === f);
 }
 const ORDER_STATUS = { paid: ['Paid', 'ok'], pending: ['Checking out', 'need'], waitlisted: ['Waitlist', 'wait'], refunded: ['Refunded', 'need'], cancelled: ['Abandoned', ''] };
+/* Notes stay out of the way: an icon to add one, the note itself (click to edit) once there is one. */
+const NOTE_ICON = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M4 3h9l3 3v11H4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 9h6M7 12h6M7 15h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+function noteHtml(o) {
+  return o.admin_notes
+    ? `<button class="notebtn has" data-note title="Edit note">${NOTE_ICON}<span>${esc(o.admin_notes)}</span></button>`
+    : `<button class="notebtn" data-note title="Add a note" aria-label="Add a note">${NOTE_ICON}</button>`;
+}
+function openNote(cell) {
+  const o = CS.data.orders.find((x) => x.id === cell.closest('[data-ord]').dataset.ord);
+  cell.innerHTML = `<div class="noteedit"><textarea rows="3" aria-label="Note" placeholder="Note for the league (families don’t see it)">${esc(o.admin_notes)}</textarea>
+    <div class="row"><button class="btn primary" data-notesave>Save</button><button class="linkbtn" data-notecancel>Cancel</button></div></div>`;
+  const ta = cell.querySelector('textarea'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') cell.querySelector('[data-notecancel]').click();
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) cell.querySelector('[data-notesave]').click();
+  });
+}
+async function saveNote(cell, save) {
+  const o = CS.data.orders.find((x) => x.id === cell.closest('[data-ord]').dataset.ord);
+  if (save) {
+    const v = cell.querySelector('textarea').value.trim();
+    if (v !== (o.admin_notes || '') && await act('PATCH', CA(`/orders/${encodeURIComponent(o.id)}`), { admin_notes: v }, v ? 'Note saved' : 'Note removed')) o.admin_notes = v;
+  }
+  cell.innerHTML = noteHtml(o);
+  cell.querySelector('[data-note]').focus();
+}
 function renderOrders() {
   const el = $('ordTable'); if (!el) return;
   const os = shownOrders();
-  el.innerHTML = '<tr><th>Placed</th><th>Family</th><th>Players</th><th class="num">Amount</th><th>Status</th><th title="Entered in SportsEngine">In SE</th><th>Notes</th></tr>'
+  el.innerHTML = '<tr><th>Placed</th><th>Family</th><th>Players</th><th class="num">Amount</th><th>Status</th><th title="Tick once this family is entered in SportsEngine. “Export new” leaves ticked families out.">In SportsEngine</th><th><span class="vh">Notes</span></th></tr>'
     + (os.length ? os.map((o) => {
       const [sl, sc] = ORDER_STATUS[o.status] ?? [o.status, ''];
       return `<tr data-ord="${esc(o.id)}"><td class="sub" style="white-space:nowrap">${esc(whenLocal(o.created_at.replace(' ', 'T') + (o.created_at.includes('Z') ? '' : 'Z')))}</td>
@@ -268,8 +294,9 @@ function renderOrders() {
         <span class="sub">${esc(p.program)}${p.prior_match === 'new' ? ' · new' : p.prior_match ? ' · returning' : ''}${p.status !== 'registered' ? ` · ${esc(p.status)}` : ''}</span>${p.wait_pos ? ` <span class="pill wait">waitlist #${p.wait_pos}</span>` : ''}</div>`).join('')}</td>
       <td class="num">${dollars(o.total_cents)}${o.stripe_mode === 'test' ? '<div class="sub">test</div>' : ''}</td>
       <td><span class="tag ${sc}">${esc(sl)}</span></td>
-      <td><input type="checkbox" data-synced ${o.se_synced_at ? 'checked' : ''} ${o.status === 'paid' ? '' : 'disabled'} aria-label="Entered in SportsEngine"></td>
-      <td><input type="text" data-notes value="${esc(o.admin_notes)}" placeholder="Add a note" aria-label="Notes"></td></tr>`;
+      <td><input type="checkbox" data-synced ${o.se_synced_at ? 'checked' : ''} ${o.status === 'paid' ? '' : 'disabled'} aria-label="Entered in SportsEngine"
+        title="${o.status === 'paid' ? 'Tick once this family is entered in SportsEngine' : 'Only paid registrations go into SportsEngine'}"></td>
+      <td class="notecell">${noteHtml(o)}</td></tr>`;
     }).join('') : '<tr><td colspan="7" class="note">No orders here.</td></tr>');
 }
 
@@ -466,6 +493,8 @@ $('newCamp').onclick = newDialog;
 
 $('campEditor').addEventListener('click', async (e) => {
   const t = e.target.closest('button,a,[data-kid]'); if (!t) return;
+  if (t.matches('[data-note]')) return openNote(t.closest('td'));
+  if (t.matches('[data-notesave],[data-notecancel]')) return saveNote(t.closest('td'), t.matches('[data-notesave]'));
   const sec = t.dataset.sec;
   if (sec) {
     CS.section = sec;
@@ -512,5 +541,4 @@ $('campEditor').addEventListener('change', async (e) => {
   if (t.id === 'ordFilter') { CS.filter = t.value; return renderOrders(); }
   const ord = t.closest('[data-ord]');
   if (ord && t.matches('[data-synced]')) { if (await act('POST', CA('/orders/synced'), { ids: [ord.dataset.ord], on: t.checked })) loadCampaigns(); return; }
-  if (ord && t.matches('[data-notes]')) act('PATCH', CA(`/orders/${encodeURIComponent(ord.dataset.ord)}`), { admin_notes: t.value }, 'Saved');
 });

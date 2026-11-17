@@ -7,6 +7,7 @@ import path from 'node:path'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'seleague-c-'))
 process.env.DB_PATH = path.join(dir, 'league.db')
+process.env.AUTH_DB_PATH = path.join(dir, 'auth.db') // never the real shared login database
 // Never touch a real Stripe account from tests, whatever .env says.
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake'
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test'
@@ -433,4 +434,91 @@ test('Majors tryouts by where the player stands: Majors returner, Minors returne
   paid(r.orderId)
   const e = db.prepare(`SELECT * FROM enrollments WHERE season_id = '2027' AND kid_id = ?`).get(min) as L.Enrollment
   assert.deepEqual([e.status, e.tryout, e.team_id, e.draft_id], ['Registered', 0, cubs, null])
+})
+
+test('coaches: named with an email, told when a player registers, and see their division', async () => {
+  const CO = await import('../src/lib/coaches.js')
+  const { userByEmail } = await import('../src/lib/auth.js')
+  const minors = L.divisionByKey('2027', 'minors')!.id, majors = L.divisionByKey('2027', 'majors')!.id
+  const cubs = L.divisionTeams(minors).find((t) => t.name === 'Cubs')!
+  assert.throws(() => L.saveTeam(minors, cubs.id, { name: 'Cubs', coach_email: 'not-an-email' }, A), /coach email/)
+  L.saveTeam(minors, cubs.id, { name: 'Cubs', coach: 'Lee Coach', coach_email: 'Lee@Example.com', coach_phone: '555-0101' }, A)
+  assert.equal(L.team(cubs.id)!.coach_email, 'lee@example.com')
+  const reds = L.divisionTeams(majors).find((t) => t.name === 'Reds')!
+  L.saveTeam(majors, reds.id, { name: 'Reds', coach: 'Rae Red', coach_email: 'rae@example.com' }, A)
+  // A coach can sign in: they're added as a plain user.
+  assert.equal(CO.ensureCoachUser('lee@example.com', 'Lee Coach'), true)
+  assert.equal(userByEmail('lee@example.com')!.role, 'user')
+  assert.equal(CO.ensureCoachUser('lee@example.com', 'Lee Coach'), false)
+  // Majors and Minors coaches each see both divisions (one registration feeds both drafts).
+  assert.deepEqual(CO.coachDivisions('2027', 'lee@example.com').map((d) => d.key), ['minors', 'majors'])
+  assert.deepEqual(CO.coachSeasons('LEE@example.com'), ['2027'])
+  const v = CO.coachView('2027', 'lee@example.com')
+  assert.deepEqual(v.teams.map((t) => [t.name, t.division]), [['Cubs', 'Minors']])
+  assert.ok(v.registered.some((p) => p.name === 'Mo Kid' && p.lastTeam === 'Cubs' && p.team === 'Cubs'))
+  assert.ok(v.registered.every((p) => !('email' in p) && !('phone' in p)), 'no family contact details')
+  assert.deepEqual(CO.coachView('2027', 'nobody@example.com').divisions, [])
+  // The registration email: one per coach in the group, about the player, linking to their page.
+  const mo = db.prepare(`SELECT e.id FROM enrollments e JOIN kids k ON k.id = e.kid_id WHERE e.season_id = '2027' AND k.name = 'Mo Kid'`).get() as { id: string }
+  const mails = CO.registrationMail(mo.id)!
+  assert.deepEqual(mails.map((m) => m.to).sort(), ['lee@example.com', 'rae@example.com'])
+  const lee = mails.find((m) => m.to === 'lee@example.com')!
+  assert.equal(lee.subject, 'New registration: Mo Kid — Minors')
+  assert.match(lee.text, /^Hi Lee,/)
+  assert.match(lee.text, /played for the Cubs \(Minors\) in 2026/)
+  assert.match(lee.text, /Staying with the Cubs/)
+  assert.match(lee.text, /\/coach$/m)
+  assert.match(lee.text, /you coach the Cubs/)
+  // A division can turn the emails off.
+  const d = L.division(minors)!
+  L.saveDivision('2027', minors, { ...d, keep_teams: !!d.keep_teams, closed: !!d.closed, notify_coaches: false }, A)
+  assert.equal(CO.registrationMail(mo.id), null)
+  L.saveDivision('2027', minors, { ...d, keep_teams: !!d.keep_teams, closed: !!d.closed, notify_coaches: true }, A)
+})
+
+test('coaches record what returners’ families said, and slot in last season’s players — only their own', async () => {
+  const CO = await import('../src/lib/coaches.js')
+  const O = await import('../src/lib/outreach.js')
+  const div = (s: string, k: string) => L.divisionByKey(s, k)!.id
+  const minors26 = div('2026', 'minors'), minors = div('2027', 'minors')
+  const cubs26 = L.divisionTeams(minors26).find((t) => t.name === 'Cubs')!.id
+  const cubs = L.divisionTeams(minors).find((t) => t.name === 'Cubs')!
+  const lee = 'lee@example.com'
+  // Last season's Cubs: one the rollover missed, and one on another team.
+  const miss = L.createKid('Missed Cub', '2015-07-07')
+  L.enroll('2026', miss.id, { divisionId: minors26, teamId: cubs26, status: 'Registered' }, A)
+  const other = L.createKid('Other Team Kid', '2015-08-08')
+  const bears26 = L.saveTeam(minors26, null, { name: 'Bears' }, A).id
+  L.enroll('2026', other.id, { divisionId: minors26, teamId: bears26, status: 'Registered' }, A)
+
+  // Search: last season's Cub can be added; another team's player can't.
+  const hits = CO.coachCandidates('2027', lee, cubs.id, 'Cub')
+  assert.equal(hits.find((h) => h.name === 'Missed Cub')!.blocked, '')
+  assert.match(CO.coachCandidates('2027', lee, cubs.id, 'Other Team')[0]!.blocked, /Played for the Bears — ask the league/)
+  assert.throws(() => CO.coachSlot('2027', lee, cubs.id, other.id), /ask the league/)
+  assert.throws(() => CO.coachSlot('2027', 'rae@example.com', cubs.id, miss.id), /isn’t one of your teams/)
+  CO.coachSlot('2027', lee, cubs.id, miss.id)
+  const e = enr('Missed Cub') as L.Enrollment & { intent: string; intent_by: string }
+  assert.deepEqual([e.status, e.returner, e.returning_team_id, e.division_id], ['Expected', 1, cubs.id, minors])
+  let roster = CO.coachView('2027', lee).rosters.find((t) => t.id === cubs.id)!
+  const p = roster.players.find((x) => x.name === 'Missed Cub')!
+  assert.deepEqual([p.intent, p.addedByCoach], ['', true])
+
+  // A coach's answer is stored as the coach's, and frees the seat on "not returning".
+  CO.coachSetIntent('2027', lee, e.id, 'no')
+  assert.deepEqual(Object.values(db.prepare('SELECT status, intent, intent_by FROM enrollments WHERE id = ?').get(e.id)!), ['Not returning', 'no', 'coach'])
+  CO.coachSetIntent('2027', lee, e.id, 'yes')
+  assert.equal(L.enrollment(e.id)!.status, 'Expected')
+  assert.throws(() => CO.coachSetIntent('2027', 'rae@example.com', e.id, 'no'), /isn’t one of your teams/)
+
+  // The family's own answer (interest check) is stored as theirs, and a coach can't overrule it.
+  O.applyIntent('2027', miss.id, 'yes', 'family:parent@example.com')
+  assert.equal((db.prepare('SELECT intent_by FROM enrollments WHERE id = ?').get(e.id) as { intent_by: string }).intent_by, 'family')
+  assert.throws(() => CO.coachSetIntent('2027', lee, e.id, 'no'), /family already answered/)
+  roster = CO.coachView('2027', lee).rosters.find((t) => t.id === cubs.id)!
+  assert.deepEqual([roster.players.find((x) => x.name === 'Missed Cub')!.intent, roster.players.find((x) => x.name === 'Missed Cub')!.intentBy], ['yes', 'family'])
+
+  // Undo a mistaken slot.
+  CO.coachUnslot('2027', lee, e.id)
+  assert.equal(L.enrollment(e.id)!.returning_team_id, null)
 })

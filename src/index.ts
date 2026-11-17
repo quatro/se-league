@@ -34,7 +34,7 @@ const page = (name: string) => (_req: express.Request, res: express.Response) =>
 // A draft-room hostname (e.g. 2027majordraft...) opens straight into its draft; /admin there is that room's admin view.
 app.get(['/', '/admin'], (req, res, next) => (config.draftHosts[req.hostname] ? page('draft.html')(req, res) : next()))
 app.get(['/draft/:season/:key', '/draft/:season/:key/admin'], page('draft.html'))
-app.get(['/admin', '/kids/:id'], page('index.html'))
+app.get(['/admin', '/kids/:id', '/coach'], page('index.html'))
 app.get(['/register/:slug', '/register/:slug/done'], page('register.html'))
 app.get('/signin', page('signin.html'))
 app.get('/interest/:token', page('interest.html'))
