@@ -36,7 +36,7 @@ async function api<T>(method: 'GET' | 'POST', path: string, body?: Record<string
 }
 
 export interface LineItem { name: string; description?: string; unitCents: number; qty: number }
-export interface CheckoutSession { id: string; url: string; status: string; payment_status: string; payment_intent: string | null; amount_total: number; metadata: Record<string, string> }
+export interface CheckoutSession { id: string; url: string; status: string; payment_status: string; payment_intent: string | null; amount_total: number; metadata: Record<string, string>; mode?: string; setup_intent?: string | null }
 
 export function createCheckout(p: {
   lines: LineItem[]; email: string; orderId: string; successUrl: string; cancelUrl: string; description: string; idempotencyKey: string; extraMetadata?: Record<string, string>
@@ -60,6 +60,24 @@ export function createCheckout(p: {
   }, p.idempotencyKey)
 }
 
+/** A Stripe customer to keep a card on (an early sign-up saves a card before anything is charged). */
+export const createCustomer = (p: { email: string; name: string; orderId: string }) =>
+  api<{ id: string }>('POST', '/customers', { email: p.email, name: p.name, metadata: { order_id: p.orderId } }, `cust-${p.orderId}`)
+
+/** Hosted Checkout that only saves a card for later — nothing is charged now. */
+export function createSetupCheckout(p: { customer: string; orderId: string; successUrl: string; cancelUrl: string; description: string; idempotencyKey: string }) {
+  return api<CheckoutSession>('POST', '/checkout/sessions', {
+    mode: 'setup', currency: 'usd', payment_method_types: ['card'], customer: p.customer,
+    client_reference_id: p.orderId, success_url: p.successUrl, cancel_url: p.cancelUrl,
+    expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
+    metadata: { order_id: p.orderId },
+    setup_intent_data: { description: p.description, metadata: { order_id: p.orderId } },
+  }, p.idempotencyKey)
+}
+
+export interface SetupIntent { id: string; status: string; customer: string | null; payment_method: PaymentIntent['payment_method'] }
+export const getSetupIntent = (id: string) => api<SetupIntent>('GET', `/setup_intents/${encodeURIComponent(id)}?expand[]=payment_method`)
+
 export const getCheckout = (id: string) => api<CheckoutSession>('GET', `/checkout/sessions/${encodeURIComponent(id)}`)
 
 export interface PaymentIntent {
@@ -70,10 +88,10 @@ export interface PaymentIntent {
 export const getPaymentIntent = (id: string) => api<PaymentIntent>('GET', `/payment_intents/${encodeURIComponent(id)}?expand[]=payment_method`)
 
 /** Charge a saved card with no one at the keyboard (a scheduled installment). Throws with the bank's reason on a decline. */
-export function chargeSavedCard(p: { customer: string; paymentMethod: string; cents: number; description: string; metadata: Record<string, string>; idempotencyKey: string }) {
+export function chargeSavedCard(p: { customer: string; paymentMethod: string; cents: number; description: string; metadata: Record<string, string>; idempotencyKey: string; receiptEmail?: string }) {
   return api<PaymentIntent>('POST', '/payment_intents', {
     amount: p.cents, currency: 'usd', customer: p.customer, payment_method: p.paymentMethod, off_session: true, confirm: true,
-    description: p.description, metadata: p.metadata,
+    description: p.description, metadata: p.metadata, ...(p.receiptEmail ? { receipt_email: p.receiptEmail } : {}),
   }, p.idempotencyKey)
 }
 

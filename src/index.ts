@@ -51,3 +51,4 @@ app.listen(config.port, '127.0.0.1', () => console.log(`${config.leagueName} lea
 const planTick = () => runPlans().catch((e) => console.error('[plans]', e))
 setTimeout(planTick, 60_000)
 setInterval(planTick, 15 * 60_000)
+// Opening day: once registration opens to everyone, charge and register the early sign-ups. Checked every minute.

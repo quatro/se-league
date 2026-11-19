@@ -1152,3 +1152,17 @@ html:has(main.reg){scroll-padding:28px 0 96px}
 .trynote{margin:0 0 8px;font-size:.88rem;font-weight:600;color:var(--ok)}
 .programs.one{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .programs.one label{flex:0 1 auto}
+/* Registration: early sign-ups in the returners-only window */
+.warnbox.earlynote{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 8%,var(--card));font-size:.9rem;line-height:1.45}
+.warnbox.earlynote b{display:block;margin-bottom:2px}
+.sumtotal.sumlater{font-size:.9rem;font-weight:600;color:var(--muted)}
+.sumtotal.sumlater span:first-child{max-width:70%}
+/* Waiting line: the churn forecast above each program's line, and where the expected room ends. */
+.forecast{margin:4px 0 10px;display:flex;flex-direction:column;gap:2px}
+.kt tr.cutline td{border-bottom:2px dashed var(--warn)}
+.kt input.mini-in{width:4.5em;text-align:right;padding:4px 6px}
+#dlg:has(.churndlg){width:min(680px,calc(100vw - 24px))}
+/* The league's own word to families waiting in line. */
+.linemsg{display:block;margin:6px 0;font-style:italic}
+p.linemsg{margin:0 0 8px}
+blockquote.linemsg{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--line);color:var(--muted, inherit)}

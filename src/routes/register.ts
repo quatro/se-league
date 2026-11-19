@@ -183,6 +183,8 @@ const campaignBody = z.object({
   intro: z.string().max(10000).optional(), confirmation: z.string().max(10000).optional(),
   kind: z.enum(['spring', 'standard']).optional(),
   plan_installments: z.number().int().min(0).max(12).optional(), plan_final_date: z.union([z.string().max(10), z.null()]).optional(), plan_min_cents: z.number().int().min(0).max(10_000_000).optional(),
+  churn: z.object({ up: z.number().min(0).max(100), stay: z.number().min(0).max(100), div: z.record(z.string().max(40), z.object({ up: z.number().min(0).max(100), stay: z.number().min(0).max(100) })).optional() }).optional(),
+  line_card: z.boolean().optional(), line_message: z.string().max(1000).optional(),
 })
 admin.post('/', wrap((req) => {
   const c = C.saveCampaign(null, campaignBody.parse(req.body), actor(req))
@@ -227,6 +229,9 @@ admin.post('/:id/players/:pid/offer', wrap(async (req) => {
   return { ...r, message: r.registered ? 'Nothing to pay — registered' : r.emailed ? `Offer emailed to ${r.emailed}` : 'Pay link created — send it to the family' }
 }))
 admin.post('/:id/players/:pid/remove', wrap((req) => { C.removeFromWaitlist(p(req, 'pid'), actor(req)); return { message: 'Removed from the waitlist' } }))
+// Early sign-ups (new players from the returners-only window): charge the saved card and register, or take them out.
+// Let a family in from the line: charge their saved card and register the player.
+admin.post('/:id/line/:pid/accept', wrap(async (req) => C.acceptFromLine(p(req, 'pid'), actor(req))))
 admin.get('/:id/export.csv', wrap((req, res) => {
   const c = C.mustCampaign(p(req, 'id'))
   const rows = C.exportRows(c.id, req.query.unsynced === '1')

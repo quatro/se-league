@@ -211,7 +211,8 @@ async function lookupReturning(sec) {
   if (sec._returning && sec._returning !== 'new' && !r.matches.some((m) => m.id === sec._returning)) sec._returning = '';
   // Added already confirmed (from the family list or a sibling): the card was drawn before we knew their team,
   // so draw it again — the tryout question depends on it.
-  if (matchOf(sec)) renderPlayer(sec);
+  // (and a possible returner shouldn't see the waiting-line note while we ask)
+  if (r.matches.length) renderPlayer(sec);
   renderReturning(sec);
   pickSuggested(sec);
   lookupSiblings(sec);
@@ -426,7 +427,7 @@ function renderPlayer(sec) {
   const prog = sec.querySelector('.programs');
   prog.innerHTML = age == null ? '<p class="note">Enter a birthdate to see the divisions this player can join.</p>'
     : ok.length ? `<b style="font-size:.88rem">Division${foldDiv(sec, ok, cur) ? ' <button type="button" class="linkbtn" data-alldiv>Change</button>' : ''}</b>${ok.filter((o) => !foldDiv(sec, ok, cur) || o.id === cur).map((o) => `<label><input type="radio" name="program-${sec.dataset.pid}" data-program value="${esc(o.id)}" ${o.id === cur || ok.length === 1 ? 'checked' : ''}>
-        <span><b>${esc(o.name)} ${shutFor(o, matchOf(sec)) ? '<span class="pill wait">Full</span>' : fullFor(o, matchOf(sec)) ? `<span class="pill wait">${o.protected ? 'Waitlist' : 'Full — waitlist'}</span>` : o.left != null && o.left <= 5 ? `<span class="pill wait">${o.left} left</span>` : ''}</b>${o.description ? `<span class="sub">${esc(o.description)}</span>` : ''}</span></label>`).join('')}`
+        <span><b>${esc(o.name)} ${shutFor(o, matchOf(sec)) ? '<span class="pill wait">Full</span>' : fullFor(o, matchOf(sec)) ? '<span class="pill wait">Full — line</span>' : waitsFor(sec, o) ? '<span class="pill wait">Line</span>' : o.left != null && !holdsSeat(sec, o) ? `<span class="pill wait">${o.left} left</span>` : ''}</b>${o.description ? `<span class="sub">${esc(o.description)}</span>` : ''}</span></label>`).join('')}`
       : `<p class="err-text">No ${C.campaign.year} division fits league age ${age}.</p>`;
   // Only one division showing and it's picked: a slim line, not a big option box.
   prog.classList.toggle('one', age != null && isReturner(sec) && prog.querySelectorAll('[data-program]').length === 1 && !!prog.querySelector('[data-program]:checked'));
@@ -436,11 +437,14 @@ function renderPlayer(sec) {
   const shut = offering && shutFor(offering, matchOf(sec));
   if (shut) prog.insertAdjacentHTML('beforeend', `<div class="warnbox waitnote" role="alert"><b>${esc(offering.name)} is full for ${C.campaign.year}.</b>
     We’re not taking more registrations for it right now. Please contact the league if you have questions.</div>`);
-  const waits = offering && !shut && fullFor(offering, matchOf(sec));
-  if (waits && offering.protected) prog.insertAdjacentHTML('beforeend', `<div class="warnbox waitnote" role="status"><b>${esc(offering.name)} is filling up — you can still sign up.</b>
-    We’re holding the remaining spots for returning players right now, so ${esc(first || 'this player')} will join the waitlist. Nothing is charged today. As spots open we’ll email you a link to pay and claim one.</div>`);
-  else if (waits) prog.insertAdjacentHTML('beforeend', `<div class="warnbox waitnote" role="status"><b>${esc(offering.name)} is full for ${C.campaign.year} — but you can still sign up.</b>
-    ${esc(first || 'This player')} will join the waitlist in the order families register. Nothing is charged today. If a spot opens, we’ll email you a link to pay and claim it.</div>`);
+  const waits = offering && !shut && waitsFor(sec, offering) && !(sec._matches?.length && !sec._returning);
+  if (waits) prog.insertAdjacentHTML('beforeend', `<div class="warnbox waitnote" role="status">${lineNote(sec, offering, first || 'this player')}</div>`);
+  // Getting tight: say so while there's still a seat, so nobody is surprised by the line.
+  else if (offering && !shut && offering.left != null && !holdsSeat(sec, offering) && !(sec._matches?.length && !sec._returning)) {
+    const n = offering.left - newAhead(sec, offering), F = esc(first || 'this player');
+    prog.insertAdjacentHTML('beforeend', `<div class="warnbox waitnote" role="status"><b>${esc(offering.name)} is filling up — ${n === 1 ? 'one spot is' : `${n} spots are`} left for new players.</b>
+      The rest are held for returning players. If ${n === 1 ? 'it’s' : 'they’re'} taken before you finish, ${F} joins the waiting line instead${lineCard() ? ' and nothing is charged unless they get in' : ''}.</div>`);
+  }
   // Items
   const its = offering ? C.items.filter((i) => applies(i, offering.id)) : [];
   const qty = (i) => { const el = sec.querySelector(`[data-item="${i.id}"]`); return el ? (el.type === 'checkbox' ? (el.checked ? 1 : 0) : +el.value) : (d.items?.[i.id] ?? 0); };
@@ -538,17 +542,56 @@ function missing(sec) {
   }
   return out;
 }
+/* The waiting line: when every seat is spoken for by returning players, new families wait in line — with a card
+   saved when the league asks for one, charged only if they get in. */
+const lineCard = () => !!C.campaign.lineCard;
+/* Returners-only window: anyone who isn't a confirmed returning player joins the line until it opens to everyone. */
+const holdsSeat = (sec, o) => matchOf(sec)?.seatOfferingId === o.id;
+/** New players on this form ahead of this one for the same division (each takes one of the few seats left). */
+function newAhead(sec, o) {
+  let n = 0;
+  for (const s of cards()) {
+    if (s === sec) break;
+    if (s.querySelector('[data-program]:checked')?.value === o.id && !holdsSeat(s, o)) n++;
+  }
+  return n;
+}
+/** In line: the division is spoken for, or earlier players on this form take the last seats left. */
+const waitsFor = (sec, o) => fullFor(o, matchOf(sec)) || (o.left != null && !holdsSeat(sec, o) && newAhead(sec, o) >= o.left);
+/** This player's place in line: everyone already waiting, plus any earlier player on this form waiting for the same division. */
+function linePos(sec, o) {
+  if (!o.line) return null;
+  let mine = 0;
+  for (const s of cards()) {
+    if (s === sec) break;
+    const id = s.querySelector('[data-program]:checked')?.value;
+    if (id === o.id && waitsFor(s, o)) mine++;
+  }
+  return o.line.ahead + mine + 1;
+}
+function lineNote(sec, o, first) {
+  const pos = linePos(sec, o), F = esc(first.charAt(0).toUpperCase() + first.slice(1));
+  const head = pos ? `<b>${esc(o.name)} is full with returning players right now — ${F} would be #${pos} in line.</b>` : `<b>${esc(o.name)} is full for ${C.campaign.year} — but you can still sign up.</b>`;
+  if (!lineCard()) return `${head}${C.campaign.lineMessage ? `<span class="linemsg">${esc(C.campaign.lineMessage)}</span>` : ''} ${F} will join the waitlist in the order families register. Nothing is charged today. If a spot opens, we’ll email you a link to pay and claim it.`;
+  const msg = C.campaign.lineMessage ? `<span class="linemsg">${esc(C.campaign.lineMessage)}</span>` : '';
+  const charge = `Save your card today — it’s charged only when ${F} gets in, and we’ll email you when that happens.`;
+  if (pos && pos <= o.line.likely) return `${head}${msg} We expect to have room for ${F}. ${charge}`;
+  if (pos) return `${head}${msg} We can’t promise a spot that far down the line, but we’ll hold ${F}’s place in case more open up. Nothing is charged unless ${F} gets in.`;
+  return `${head}${msg} ${charge}`;
+}
 function playerCost(sec, p) {
   const o = C.offerings.find((x) => x.id === p.offeringId);
   if (!o) return { o: null, lines: [], total: 0, waits: false };
   if (shutFor(o, matchOf(sec))) return { o, lines: [], total: 0, waits: false, shut: true };
-  if (fullFor(o, matchOf(sec))) return { o, lines: [], total: 0, waits: true };
   const lines = [];
   for (const i of C.items.filter((i) => applies(i, o.id))) {
     const q = i.required ? 1 : p.items[i.id] || 0;
     if (q) lines.push({ name: i.name + (q > 1 ? ` ×${q}` : ''), cents: q * i.price_cents });
   }
-  return { o, lines, total: lines.reduce((t, l) => t + l.cents, 0), waits: false };
+  const sum = lines.reduce((t, l) => t + l.cents, 0);
+  // In line: nothing today; with a card saved, this is what's charged if they get in.
+  if (waitsFor(sec, o)) return lineCard() ? { o, lines, total: 0, later: sum, waits: true, pos: linePos(sec, o) } : { o, lines: [], total: 0, waits: true, pos: linePos(sec, o) };
+  return { o, lines, total: sum, waits: false };
 }
 /* A confirmed returner: we already know who they are, so fold the name / birthdate / gender fields away
    (gender stays until it's picked) and let the fees and questions come up the screen. "Edit" brings them back. */
@@ -621,9 +664,9 @@ function renderHead(sec, n, p, cost) {
   if (m) bits.push(m.team ? `Returning · ${esc(m.team)}` : 'Returning');
   else if (sec._returning === 'new' || (Array.isArray(sec._matches) && !sec._matches.length && p.birthdate)) bits.push('New player');
   sec.querySelector('.pmeta').innerHTML = bits.join('<span class="dotsep">·</span>');
-  sec.querySelector('.pstate').innerHTML = cost.shut ? '<span class="tag need">Full</span>' : cost.waits ? '<span class="tag wait">Waitlist</span>'
+  sec.querySelector('.pstate').innerHTML = cost.shut ? '<span class="tag need">Full</span>' : cost.waits ? `<span class="tag wait">${cost.pos ? `#${cost.pos} in line` : 'In line'}</span>`
     : need.length ? '<span class="tag need">Needs info</span>' : '<span class="tag ok">Ready</span>';
-  sec.querySelector('.pamt').textContent = cost.o ? money(cost.total) : '';
+  sec.querySelector('.pamt').textContent = cost.o ? money(cost.later ?? cost.total) : '';
   sec._need = need;
   applyIdState(sec);
   drawLeft(sec, need);
@@ -664,7 +707,7 @@ const shortDate = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', 
 /* ---------- summary ---------- */
 function renderSummary() {
   const data = readForm(), secs = cards();
-  let total = 0, waiting = 0;
+  let total = 0, waiting = 0, later = 0;
   const blocks = [], names = [];
   data.players.forEach((p, n) => {
     const sec = secs[n], cost = playerCost(sec, p);
@@ -672,16 +715,19 @@ function renderSummary() {
     const name = `${p.firstName} ${p.lastName}`.trim() || `Player ${n + 1}`;
     names.push(p.firstName || `Player ${n + 1}`);
     total += cost.total;
+    later += cost.later || 0;
     if (cost.waits) waiting++;
-    blocks.push(`<li class="sumplayer"><button type="button" class="sumname" data-open="${n}"><b>${esc(name)}</b><span>${cost.o ? (cost.waits ? '$0' : money(cost.total)) : '—'}</span></button>
-      <div class="sub">${cost.o ? esc(cost.o.name) : 'Pick a division'}${cost.waits ? ' · <span class="pill wait">waitlist</span>' : ''}${sec._need?.length && !cost.waits ? ' · <span class="needtxt">needs info</span>' : ''}</div>
+    blocks.push(`<li class="sumplayer"><button type="button" class="sumname" data-open="${n}"><b>${esc(name)}</b><span>${cost.o ? (cost.waits ? (cost.later ? money(cost.later) : '$0') : money(cost.total)) : '—'}</span></button>
+      <div class="sub">${cost.o ? esc(cost.o.name) : 'Pick a division'}${cost.waits ? ` · <span class="pill wait">${cost.pos ? `#${cost.pos} in line` : 'in line'}</span>` : ''}${sec._need?.length && !cost.waits ? ' · <span class="needtxt">needs info</span>' : ''}</div>
       ${cost.lines.length ? `<ul class="sumlines">${cost.lines.map((l) => `<li><span>${esc(l.name)}</span><span>${money(l.cents)}</span></li>`).join('')}</ul>` : ''}</li>`);
   });
   const count = data.players.length;
   $('summary').innerHTML = `<ul class="sumlist">${blocks.join('')}</ul>
     <div class="sumtotal"><span id="sumTotalLabel">Total today</span><span>${money(total)}</span></div>
     <div class="sumtotal sumdue" id="sumDue" hidden></div>
-    ${waiting ? `<p class="note">Waitlisted players aren’t charged. If a spot opens, we’ll email you a link to pay for it.</p>` : ''}`;
+    ${later ? `<div class="sumtotal sumlater"><span>Charged only if they get in</span><span>${money(later)}</span></div>
+      <p class="note">Players in line aren’t registered yet. We let families in, in line order, as returning players finish registering — then we charge the card you save today and email you.</p>`
+      : waiting ? `<p class="note">Players in line aren’t charged. If a spot opens, we’ll email you a link to pay for it.</p>` : ''}`;
   $('sumCount').textContent = `${count} player${count === 1 ? '' : 's'}`;
   // Pay in full, or split it (when the league offers a plan for this total).
   const sched = planSchedule(total);
@@ -700,29 +746,35 @@ function renderSummary() {
   $('sumTotalLabel').textContent = payPlan && sched ? 'Total' : 'Total today';
   $('sumDue').hidden = !(payPlan && sched);
   if (payPlan && sched) $('sumDue').innerHTML = `<span>Due today (payment 1 of ${sched.length})</span><span>${money(now)}</span>`;
-  $('submit').textContent = total > 0 ? `Continue to payment — ${money(now)}${payPlan && sched ? ' today' : ''}` : waiting ? 'Join the waitlist' : 'Register';
-  $('payNote').hidden = !(total > 0);
+  $('submit').textContent = total > 0 ? `Continue to payment — ${money(now)}${payPlan && sched ? ' today' : ''}` : later ? 'Save my card & join the line' : waiting ? 'Join the line' : 'Register';
+  $('payNote').hidden = !(total > 0 || later);
+  $('payNote').textContent = total > 0 ? `You'll pay securely on Stripe's checkout page. Nothing is charged until you finish there.${later ? ' Your card is saved for the players in line, charged only if they get in.' : ''}`
+    : later ? `You'll add your card on Stripe's secure page. Nothing is charged today.` : '';
   $('regbarText').innerHTML = `<b>${count} player${count === 1 ? '' : 's'}</b><span class="sub">${esc(names.join(', '))}</span>`;
-  $('regbarTotal').textContent = payPlan && sched ? `${money(now)} today` : money(total);
+  $('regbarTotal').textContent = payPlan && sched ? `${money(now)} today` : !total && later ? `$0 today` : money(total);
   try { localStorage.setItem(DRAFT, JSON.stringify(data)); } catch { /* private mode */ }
 }
 
 /* ---------- boot ---------- */
 const PSTATUS = {
   registered: 'registered',
-  waitlisted: 'on the waitlist — nothing charged. We’ll email you if a spot opens.',
+  waitlisted: 'in line — nothing charged. We’ll email you if a spot opens.',
   offered: 'a spot is open for this player!',
   expired: 'the offer to claim a spot has expired. Please contact the league.',
   cancelled: 'not registered',
+  held: 'waiting for your card to be saved.',
 };
 async function showDone() {
   const qs = new URLSearchParams(location.search);
   $('form').hidden = true; $('done').hidden = false;
   const show = (r) => {
     const ok = r.status === 'paid' || r.status === 'waitlisted';
-    $('done').innerHTML = `<section class="regsec"><h2>${r.status === 'paid' ? 'You’re registered!' : r.status === 'waitlisted' ? 'You’re on the waitlist' : r.status === 'pending' ? 'Confirming your payment…' : 'This registration wasn’t completed'}</h2>
-      <ul>${r.players.map((p) => `<li><b>${esc(p.name)}</b> — ${esc(p.program)}: ${PSTATUS[p.status] ?? esc(p.status)}${p.pay_url ? ` <a class="btn primary" href="${esc(p.pay_url)}">Pay to claim the spot</a> <span class="sub">by ${esc(p.pay_by)}</span>` : ''}</li>`).join('')}</ul>
-      ${r.status === 'paid' && !r.plan ? `<p>Paid ${money(r.total_cents)}. Stripe emails your receipt.</p>` : ''}
+    const inLine = r.players.filter((p) => p.line);
+    const lineText = (p) => `<b>#${p.line.pos} in line</b> — ${p.line.card ? `card saved, charged only if ${esc(p.name.split(' ')[0])} gets in` : 'nothing charged'}.${p.line.likely === true ? ' We expect to have room.' : p.line.likely === false ? ' We can’t promise a spot that far down, but we’ll hold the place.' : ''}`;
+    $('done').innerHTML = `<section class="regsec"><h2>${r.status === 'paid' ? 'You’re registered!' : r.status === 'waitlisted' ? 'You’re in line' : r.status === 'pending' ? 'Confirming…' : 'This registration wasn’t completed'}</h2>
+      ${inLine.length ? `<div class="warnbox earlynote">${r.lineMessage ? `<p class="linemsg">${esc(r.lineMessage)}</p>` : ''}<b>What happens next</b> ${inLine.length > 1 || r.status === 'paid' ? 'Players in line aren’t registered yet.' : 'You’re not registered yet.'} We let families in, in line order${inLine.some((p) => p.line.card) ? `, charge ${r.card ? esc(r.card) : 'the card you saved'}` : ''} and email you. If a spot doesn’t open, nothing is charged.</div>` : ''}
+      <ul>${r.players.map((p) => `<li><b>${esc(p.name)}</b> — ${esc(p.program)}: ${p.line ? lineText(p) : PSTATUS[p.status] ?? esc(p.status)}${p.pay_url ? ` <a class="btn primary" href="${esc(p.pay_url)}">Pay to claim the spot</a> <span class="sub">by ${esc(p.pay_by)}</span>` : ''}</li>`).join('')}</ul>
+      ${r.status === 'paid' && !r.plan && r.total_cents ? `<p>Paid ${money(r.total_cents)}. Stripe emails your receipt.</p>` : ''}
       ${r.status === 'paid' && r.plan ? `<p><b>Your payment plan</b>${r.plan.card ? ` — charged to ${esc(r.plan.card)}` : ''}</p>
         <table class="sumtable">${r.plan.installments.map((i) => `<tr><td>${i.seq}. ${esc(shortDate(i.due))}</td><td>${money(i.cents)} <span class="sub">${i.status === 'paid' ? 'paid' : i.status === 'waived' ? 'waived' : 'scheduled'}</span></td></tr>`).join('')}</table>
         <p class="note">We’ll email a reminder a few days before each payment. To pay early or change your card: <a href="${esc(r.plan.pay_url)}">${esc(r.plan.pay_url)}</a></p>` : ''}

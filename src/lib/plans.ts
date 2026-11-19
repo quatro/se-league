@@ -3,7 +3,7 @@ import { config } from '../config.js'
 import { db } from '../db.js'
 import { audit, changed, UserError } from './league.js'
 import { mailConfigured, sendBatch, type Mail } from './mailer.js'
-import { chargeSavedCard, createCheckout, getPaymentIntent, stripeConfigured, type PaymentIntent } from './stripe.js'
+import { chargeSavedCard, createCheckout, getPaymentIntent, getSetupIntent, stripeConfigured, type PaymentIntent } from './stripe.js'
 import { uid } from './text.js'
 
 // Payment plans: the league's own interest-free installments. The family pays the
@@ -113,7 +113,14 @@ export function firstPaymentIn(orderId: string, paymentId: string | null) {
 /** Keep the card the family just paid with, so later installments can be charged to it. */
 export async function saveCard(orderId: string, paymentIntentId: string | null) {
   if (!paymentIntentId || !stripeConfigured()) return
-  const pi = await getPaymentIntent(paymentIntentId)
+  keepCard(orderId, await getPaymentIntent(paymentIntentId))
+}
+/** An early sign-up saved a card without paying anything yet. */
+export async function saveSetupCard(orderId: string, setupIntentId: string | null) {
+  if (!setupIntentId || !stripeConfigured()) return
+  keepCard(orderId, await getSetupIntent(setupIntentId))
+}
+function keepCard(orderId: string, pi: { customer: string | null; payment_method: PaymentIntent['payment_method'] }) {
   const pm = typeof pi.payment_method === 'string' ? { id: pi.payment_method } : pi.payment_method
   if (!pi.customer || !pm?.id) return
   const card = typeof pm === 'object' && 'card' in pm ? pm.card : undefined

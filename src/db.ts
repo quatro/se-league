@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS questions (
 CREATE TABLE IF NOT EXISTS orders (
   id                TEXT PRIMARY KEY,
   campaign_id       TEXT NOT NULL REFERENCES campaigns(id),
-  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','waitlisted','cancelled','refunded')),
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','waitlisted','cancelled','refunded','held')),
   guardian          TEXT NOT NULL,            -- JSON: name, email, phone, address
   answers           TEXT NOT NULL DEFAULT '{}',
   total_cents       INTEGER NOT NULL DEFAULT 0,
@@ -283,7 +283,7 @@ CREATE TABLE IF NOT EXISTS order_players (
   birthdate     TEXT NOT NULL,
   gender        TEXT NOT NULL DEFAULT '',
   offering_id   TEXT NOT NULL REFERENCES offerings(id),
-  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','registered','waitlisted','offered','cancelled')),
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','registered','waitlisted','offered','cancelled','held')),
   answers       TEXT NOT NULL DEFAULT '{}',
   kid_id        TEXT REFERENCES kids(id) ON DELETE SET NULL,
   enrollment_id TEXT REFERENCES enrollments(id) ON DELETE SET NULL,
@@ -377,6 +377,39 @@ addColumn('order_players', 'held_seat', `INTEGER NOT NULL DEFAULT 0`)
 // Interest-check follow-ups go to the same message (same personal link, "Re:" subject): how many, and when last.
 addColumn('outreach_messages', 'reminders', `INTEGER NOT NULL DEFAULT 0`)
 addColumn('outreach_messages', 'reminded_at', `TEXT`)
+// Returners-only window: returning players register from returners_open_at; everyone else signs up early
+// (card saved, nothing charged) and is charged and registered once it opens to everyone (opens_at).
+addColumn('campaigns', 'returners_open_at', `TEXT`)
+addColumn('campaigns', 'early_auto', `INTEGER NOT NULL DEFAULT 1`) // 1 = accept early sign-ups automatically on opening day
+addColumn('order_players', 'early', `INTEGER NOT NULL DEFAULT 0`)   // signed up during the returners-only window
+addColumn('order_players', 'early_error', `TEXT NOT NULL DEFAULT ''`)
+addColumn('order_players', 'early_attempts', `INTEGER NOT NULL DEFAULT 0`)
+addColumn('order_players', 'charge_id', `TEXT`)                     // the Stripe payment for this player alone (an early sign-up charged later)
+// 'held' (a player waiting on their family to save a card before joining the line) on orders and their players. SQLite can't change a CHECK in
+// place: rebuild the table with the new list (the standard copy-and-rename), keeping its indexes.
+function widenCheck(table: string, from: string, to: string) {
+  const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table) as { sql: string } | undefined
+  if (!row || row.sql.includes(to)) return
+  if (!row.sql.includes(from)) throw new Error(`${table}: expected ${from} in its schema`)
+  const idx = (db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`).all(table) as { sql: string }[]).map((r) => r.sql)
+  const tmp = `${table}__widen`
+  const create = row.sql.replace(new RegExp(`^CREATE TABLE\\s+("?)${table}\\1`), `CREATE TABLE ${tmp}`).replace(from, to)
+  if (!create.startsWith(`CREATE TABLE ${tmp}`)) throw new Error(`${table}: couldn't rewrite its schema`)
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      db.exec(create)
+      db.exec(`INSERT INTO ${tmp} SELECT * FROM ${table}`)
+      db.exec(`DROP TABLE ${table}`)
+      db.exec(`ALTER TABLE ${tmp} RENAME TO ${table}`)
+      for (const s of idx) db.exec(s)
+      const bad = db.pragma('foreign_key_check') as unknown[]
+      if (bad.length) throw new Error(`${table}: foreign key check failed after rebuild`)
+    })()
+  } finally { db.pragma('foreign_keys = ON') }
+}
+widenCheck('orders', `'cancelled','refunded')`, `'cancelled','refunded','held')`)
+widenCheck('order_players', `'offered','cancelled')`, `'offered','cancelled','held')`)
 // Boy / Girl, from the family's own registration — so next year's form fills it in. Rosters never carried it.
 if (addColumn('kids', 'gender', `TEXT NOT NULL DEFAULT ''`))
   db.exec(`UPDATE kids SET gender = (SELECT op.gender FROM order_players op JOIN orders o ON o.id = op.order_id
@@ -396,6 +429,13 @@ addColumn('offerings', 'protect_at', 'INTEGER')
 // summer and fall registrations are simple sign-ups. Existing registrations tied to a season are the spring league.
 if (addColumn('campaigns', 'kind', `TEXT NOT NULL DEFAULT 'standard' CHECK (kind IN ('spring','standard'))`))
   db.prepare(`UPDATE campaigns SET kind = 'spring' WHERE season_id IS NOT NULL`).run()
+// The line (2026-11-19): when a spring division's seats are spoken for, new families wait in line with a card saved
+// (line_card) and the admin lets them in, guided by anticipated churn — the share of returners still expected who
+// won't be back ({up, stay, div: {divisionId: {up, stay}}}, percents). Spring programs protect returners' seats.
+addColumn('campaigns', 'line_card', `INTEGER NOT NULL DEFAULT 1`)
+addColumn('campaigns', 'line_message', `TEXT NOT NULL DEFAULT ''`) // what families in line are told ('' = the default)
+if (addColumn('campaigns', 'churn', `TEXT NOT NULL DEFAULT '{}'`))
+  db.exec(`UPDATE offerings SET protect_at = 0 WHERE protect_at IS NULL AND campaign_id IN (SELECT id FROM campaigns WHERE kind = 'spring')`)
 addColumn('order_players', 'offer_expires_at', 'TEXT')
 // Coaches (2026-11-17): each team's coach can be emailed when a player registers for their division, and signs in
 // with this address to see their division's players. notify_coaches turns those emails off for a division.

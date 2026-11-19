@@ -89,7 +89,7 @@ function renderCampaigns() {
   const waiting = d.waitlist.reduce((a, w) => a + w.players.length, 0);
   const plan = c.plan_installments >= 2 && c.plan_final_date, planWorks = plan && planPreview(sampleTotal(), c.plan_installments, c.plan_final_date);
   const SECTIONS = [['details', 'Details', ''], ['programs', 'Divisions', progOn], ['fees', 'Fees', iOn], ['questions', 'Questions', qOn], ['plan', 'Payment plan', plan ? (planWorks ? 'On' : '!') : 'Off'],
-    ['waitlist', 'Waitlist', waiting], ['orders', 'Orders', d.orders.filter((o) => o.status === 'paid').length]];
+    ['waitlist', c.kind === 'spring' ? 'Waiting line' : 'Waitlist', waiting], ['orders', 'Orders', d.orders.filter((o) => o.status === 'paid').length]];
   if (!SECTIONS.some(([k]) => k === CS.section)) CS.section = 'details';
 
   ed.innerHTML = `
@@ -131,6 +131,7 @@ function sectionHtml(s) {
         ${dl('Season', esc(String(season)))}
         ${dl('Web address', `<code>/register/${esc(c.slug)}</code>`)}
         ${dl('Opens', c.opens_at ? esc(whenLocal(c.opens_at)) : '<span class="sub">No date — opens when you click <b>Open registration</b></span>')}
+        ${c.kind === 'spring' ? dl('Waiting line', c.line_card ? 'New families save a card when their division is spoken for; you charge it when you let them in' : 'Free — you send a pay link when a spot opens') : ''}
         ${dl('Closes', c.closes_at ? esc(whenLocal(c.closes_at)) : '<span class="sub">No date — stays open until you close it</span>')}
         ${dl('Intro', c.intro ? `<div class="quote">${esc(c.intro)}</div>` : '<span class="sub">None — the form starts with the parent’s details</span>')}
         ${dl('After registering', c.confirmation ? `<div class="quote">${esc(c.confirmation)}</div>` : '<span class="sub">None — families see the standard “You’re registered” page</span>')}
@@ -207,22 +208,99 @@ function sectionHtml(s) {
       <div class="scroll"><table class="kt ordt" id="ordTable"></table></div></div></div>`;
 }
 
-/* Each program's waitlist in sign-up order, with the offer / remove actions. */
+/* Each program's line in sign-up order. Spring: the churn forecast says how far down we expect room, and a family
+   that saved a card is let in with one click (charged then). Others get a pay link (Offer the spot). */
 function waitlistPanel(d) {
+  const c = d.campaign, spring = c.kind === 'spring';
   const when = (iso) => (iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
   const state = (p) => p.status === 'offered' ? `<span class="chip meh">Offered — pay by ${esc(when(p.offer_expires_at))}</span>`
     : p.status === 'expired' ? `<span class="chip bad">Offer expired ${esc(when(p.offer_expires_at))}</span>` : '<span class="chip">Waiting</span>';
-  return `<div class="panel"><div class="hd"><h2>Waitlist</h2></div><div class="bd">
-    <p class="note">First come, first served. <b>Offer the spot</b> gives the family a personal pay link with a deadline${d.mail ? ' and emails it to them' : ' to send them (email isn’t set up yet, so copy it)'}; when they pay, the player is registered automatically.</p>
-    ${d.waitlist.length ? d.waitlist.map((w) => `<h3 class="subhd">${esc(w.program)} <span class="sub">${w.players.length} waiting</span></h3>
-      <div class="scroll"><table class="kt"><tr><th class="num">#</th><th>Player</th><th>Family</th><th>Joined</th><th class="num">Owes</th><th>Status</th><th></th></tr>
-      ${w.players.map((p) => `<tr data-wp="${esc(p.id)}"><td class="num"><b>${p.pos}</b></td>
-        <td><button class="linkbtn" ${p.kid_id ? `data-kid="${esc(p.kid_id)}"` : 'disabled'}>${esc(p.name)}</button></td>
-        <td>${esc(p.family)}<div class="sub">${esc(p.email)} · ${esc(p.phone)}</div></td><td class="sub">${esc(when(p.signed_up.replace(' ', 'T') + 'Z'))}</td>
-        <td class="num">${dollars(p.due_cents)}</td><td>${state(p)}</td>
-        <td style="white-space:nowrap">${p.offer_url ? `<button class="mini" data-copy="${esc(p.offer_url)}">Copy pay link</button> ` : ''}<button class="mini" data-offer="${esc(p.id)}" data-who="${esc(p.name)}" data-due="${p.due_cents}">${p.status === 'waitlisted' ? 'Offer the spot' : 'Offer again'}</button>
-          <button class="mini" data-remove="${esc(p.id)}">Remove</button></td></tr>`).join('')}</table></div>`).join('') : '<p class="lead">Nobody is waiting.</p>'}
+  const fc = (f) => {
+    if (!f) return '';
+    const n = (x, w) => `${x} ${w}${x === 1 ? '' : 's'}`;
+    return `<p class="forecast"><b>${f.room ? `Room expected for about the first ${f.room} in line` : 'No room expected yet'}</b>
+      <span class="sub">${f.capacity} spots − ${f.registered} registered − ${f.outstanding} returners still to register = ${f.open < 0 ? `${-f.open} over` : `${f.open} open now`}${f.expectedOut ? `, plus ~${f.expectedOut} returners we expect won’t be back (of ${f.up} moving up and ${f.stay} staying${f.sure ? `; ${n(f.sure, 'family')} said yes` : ''})` : ''}.</span></p>`;
+  };
+  const row = (p, w) => `<tr data-wp="${esc(p.id)}" class="${w.forecast && p.pos === w.forecast.room && p.pos < w.players.length ? 'cutline' : ''}"><td class="num"><b>${p.pos}</b></td>
+    <td><button class="linkbtn" ${p.kid_id ? `data-kid="${esc(p.kid_id)}"` : 'disabled'}>${esc(p.name)}</button>${w.forecast ? (p.pos <= w.forecast.room ? ' <span class="chip good">Likely</span>' : '') : ''}${p.error ? `<div class="err-text sub">${esc(p.error)}</div>` : ''}</td>
+    <td>${esc(p.family)}<div class="sub">${esc(p.email)} · ${esc(p.phone)}</div></td><td class="sub">${esc(when(p.signed_up.replace(' ', 'T') + 'Z'))}</td>
+    <td class="num">${dollars(p.due_cents)}${spring ? `<div class="sub">${p.card ? esc(p.card) : 'No card'}</div>` : ''}</td><td>${state(p)}</td>
+    <td style="white-space:nowrap">${p.card && p.status === 'waitlisted' ? `<button class="btn primary mini" data-laccept="${esc(p.id)}" data-who="${esc(p.name)}" data-due="${p.due_cents}" data-card="${esc(p.card)}" data-room="${w.forecast ? w.forecast.room : ''}" data-open="${w.forecast ? w.forecast.open : ''}" data-pos="${p.pos}" data-program="${esc(w.program)}">Let in</button> ` : ''}${p.offer_url ? `<button class="mini" data-copy="${esc(p.offer_url)}">Copy pay link</button> ` : ''}${p.card && p.status === 'waitlisted' ? '' : `<button class="mini" data-offer="${esc(p.id)}" data-who="${esc(p.name)}" data-due="${p.due_cents}">${p.status === 'waitlisted' ? 'Offer the spot' : 'Offer again'}</button> `}<button class="mini" data-remove="${esc(p.id)}">Remove</button></td></tr>`;
+  return `<div class="panel"><div class="hd"><h2>${spring ? 'Waiting line' : 'Waitlist'}</h2>${spring && d.churn && canEdit() ? '<span class="row"><button class="btn" data-linemsg>Message to families</button><button class="btn" data-churn>Anticipated churn</button></span>' : ''}</div><div class="bd">
+    <p class="note">First come, first served.${spring ? ` New families wait here when every seat in a division is spoken for — returners still to register hold theirs.${c.line_card ? ' Families in line save a card; <b>Let in</b> charges it and registers the player.' : ''}` : ''}
+      <b>Offer the spot</b> gives a family a personal pay link with a deadline${d.mail ? ' and emails it to them' : ' to send them (email isn’t set up yet, so copy it)'}.${spring && d.churn ? ` “Likely” uses your anticipated churn: ${d.churn.up}% of returners moving up and ${d.churn.stay}% staying won’t be back (per-division changes under <b>Anticipated churn</b>).` : ''}</p>
+    ${spring ? `<blockquote class="linemsg">${esc(c.line_message || d.defaultLineMessage)}</blockquote>` : ''}
+    ${d.waitlist.length ? d.waitlist.map((w) => `<h3 class="subhd">${esc(w.program)} <span class="sub">${w.players.length} waiting</span></h3>${fc(w.forecast)}
+      ${w.players.length ? `<div class="scroll"><table class="kt"><tr><th class="num">#</th><th>Player</th><th>Family</th><th>Joined</th><th class="num">Owes</th><th>Status</th><th></th></tr>
+      ${w.players.map((p) => row(p, w)).join('')}</table></div>` : ''}`).join('') : '<p class="lead">Nobody is waiting.</p>'}
   </div></div>`;
+}
+
+/* What families in line read on the form and their confirmation page. */
+function lineMessageDialog() {
+  const c = CS.data.campaign, def = CS.data.defaultLineMessage;
+  editDialog(`<form class="dlg"><h2>Message to families in line</h2>
+    <p class="note">Shown to every family whose player joins the waiting line — on the form, before they save a card, and on their confirmation page — next to their place in line.</p>
+    ${fld('Message', `<textarea name="msg" rows="5" maxlength="1000">${esc(c.line_message || def)}</textarea>`)}
+    <button type="button" class="linkbtn" data-reset style="justify-self:start">Use the standard message</button>
+    ${footer()}</form>`, (f) => act('PATCH', CA(), { name: c.name, line_message: f.elements.msg.value }, 'Saved'));
+  const f = $('dlg').querySelector('form');
+  f.querySelector('[data-reset]').onclick = () => { f.elements.msg.value = def; };
+}
+
+/* Let a family in from the line: charge their saved card and register the player. */
+function acceptLineDialog(btn) {
+  const who = btn.dataset.who, first = who.split(' ')[0], room = btn.dataset.room === '' ? null : +btn.dataset.room, open = btn.dataset.open === '' ? null : +btn.dataset.open;
+  const beyond = room != null && +btn.dataset.pos > room;
+  const counting = open != null && open <= 0;
+  openDialog(`<div class="dlg"><h2>Let ${esc(who)} in?</h2>
+    <p>We’ll charge <b>${dollars(+btn.dataset.due)}</b> to ${esc(btn.dataset.card || 'the card their family saved')}, register ${esc(first)} in ${esc(btn.dataset.program)} and email the family a receipt.</p>
+    ${counting ? `<div class="alertbox">Every ${esc(btn.dataset.program)} seat is still spoken for by registered players and returners who haven’t signed up yet — letting ${esc(first)} in counts on some of those returners not coming back.${beyond ? ` ${esc(first)} is #${btn.dataset.pos}, past the ${room} your churn forecast expects room for.` : ''}</div>` : ''}
+    <p class="note">If the card is declined, the family gets a pay link good for 3 days${CS.data.mail ? ' by email' : ' (copy it from this list — email isn’t set up yet)'}.</p>
+    <div class="row"><button class="btn primary" id="lGo">Charge &amp; register</button><span class="spacer"></span><button class="btn" data-close>Cancel</button></div></div>`, (dl) => {
+    dl.querySelector('#lGo').onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Charging…';
+      const r = await act('POST', CA(`/line/${encodeURIComponent(btn.dataset.laccept)}/accept`), {});
+      dl.close(); loadCampaigns();
+      if (r?.url) openDialog(`<div class="dlg"><h2>Card declined</h2><p>${esc(r.message)}</p><input type="text" value="${esc(r.url)}" readonly onclick="this.select()">
+        <div class="row"><button class="btn primary" id="copyLink">Copy pay link</button><span class="spacer"></span><button class="btn" data-close>Close</button></div></div>`,
+        (d2) => { d2.querySelector('#copyLink').onclick = () => navigator.clipboard?.writeText(r.url).then(() => toast('Copied')); });
+      else if (r?.message) toast(r.message);
+    };
+  });
+}
+
+/* Anticipated churn: the share of returners still expected back who won't sign up. Moving up into a division
+   (T-Ball → Rookie) usually loses more than a second year in the same one. */
+function churnDialog() {
+  const ch = CS.data.churn, c = CS.data.campaign;
+  const out = (r, up, stay) => Math.floor((r.up * up + r.stay * stay) / 100);
+  editDialog(`<form class="dlg churndlg"><h2>Anticipated churn</h2>
+    <p class="note">Of the returners still expected back, the percent you think won’t sign up. It only guides the waiting line — “Likely” and what families are told — nobody is registered or bumped by it. Families who answered <b>yes</b> on the interest check count as coming back.</p>
+    <div class="fld2">${fld('Moving up into a new division', `<input type="number" name="up" min="0" max="100" step="1" value="${ch.up}">`, '% — e.g. T-Ball → Rookie')}${fld('Staying in the same division', `<input type="number" name="stay" min="0" max="100" step="1" value="${ch.stay}">`, '% — e.g. a second year of Rookie')}</div>
+    <div class="scroll"><table class="kt"><tr><th>Division</th><th class="num">Moving up</th><th class="num">Staying</th><th class="num">Up %</th><th class="num">Stay %</th><th class="num">Not back</th></tr>
+    ${ch.divisions.map((r) => `<tr data-div="${esc(r.divisionId)}"><td>${esc(r.name)}</td><td class="num">${r.up}</td><td class="num">${r.stay}</td>
+      <td class="num"><input type="number" class="mini-in" name="up-${esc(r.divisionId)}" min="0" max="100" step="1" placeholder="${ch.up}" value="${r.rates ? r.rates.up : ''}" aria-label="${esc(r.name)} moving up percent"></td>
+      <td class="num"><input type="number" class="mini-in" name="stay-${esc(r.divisionId)}" min="0" max="100" step="1" placeholder="${ch.stay}" value="${r.rates ? r.rates.stay : ''}" aria-label="${esc(r.name)} staying percent"></td>
+      <td class="num"><b data-out>${r.expectedOut}</b></td></tr>`).join('')}</table></div>
+    <p class="note">Leave a division blank to use the defaults above.</p>
+    <label class="chk"><input type="checkbox" name="lcard" ${c.line_card ? 'checked' : ''}> Families joining the line save a card (charged only when you let them in)</label>
+    ${footer()}</form>`, (f) => {
+    const num = (n) => (f.elements[n].value === '' ? null : +f.elements[n].value);
+    const div = {};
+    for (const r of ch.divisions) { const up = num(`up-${r.divisionId}`), stay = num(`stay-${r.divisionId}`); if (up != null || stay != null) div[r.divisionId] = { up: up ?? num('up') ?? 0, stay: stay ?? num('stay') ?? 0 }; }
+    return act('PATCH', CA(), { name: c.name, churn: { up: num('up') ?? 0, stay: num('stay') ?? 0, div }, line_card: f.elements.lcard.checked }, 'Saved');
+  });
+  // Live totals as they type.
+  const f = $('dlg').querySelector('form');
+  f.addEventListener('input', () => {
+      const num = (n, d) => (f.elements[n].value === '' ? d : +f.elements[n].value);
+      for (const r of ch.divisions) {
+        const up = num(`up-${r.divisionId}`, num('up', 0)), stay = num(`stay-${r.divisionId}`, num('stay', 0));
+        f.querySelector(`[data-div="${CSS.escape(r.divisionId)}"] [data-out]`).textContent = out(r, up, stay);
+        f.elements[`up-${r.divisionId}`].placeholder = num('up', 0); f.elements[`stay-${r.divisionId}`].placeholder = num('stay', 0);
+      }
+  });
 }
 
 function offerDialog(btn) {
@@ -255,7 +333,7 @@ function shownOrders() {
   if (f === 'waitlisted') return os.filter((o) => o.players.some((p) => ['waitlisted', 'offered'].includes(p.status)));
   return os.filter((o) => o.status === f);
 }
-const ORDER_STATUS = { paid: ['Paid', 'ok'], pending: ['Checking out', 'need'], waitlisted: ['Waitlist', 'wait'], refunded: ['Refunded', 'need'], cancelled: ['Abandoned', ''] };
+const ORDER_STATUS = { paid: ['Paid', 'ok'], pending: ['Checking out', 'need'], waitlisted: ['Waitlist', 'wait'], held: ['Saving card', 'need'], refunded: ['Refunded', 'need'], cancelled: ['Abandoned', ''] };
 /* Notes stay out of the way: an icon to add one, the note itself (click to edit) once there is one. */
 const NOTE_ICON = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M4 3h9l3 3v11H4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 9h6M7 12h6M7 15h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 function noteHtml(o) {
@@ -529,6 +607,9 @@ $('campEditor').addEventListener('click', async (e) => {
     return;
   }
   if (t.dataset.kid) return showKid(t.dataset.kid);
+  if (t.dataset.laccept) return acceptLineDialog(t);
+  if (t.matches('[data-churn]')) return churnDialog();
+  if (t.matches('[data-linemsg]')) return lineMessageDialog();
   if (t.dataset.offer) return offerDialog(t);
   if (t.dataset.copy) { navigator.clipboard?.writeText(t.dataset.copy).then(() => toast('Pay link copied')); return; }
   if (t.dataset.remove) {

@@ -129,9 +129,11 @@ test('an expected returner who registers flips to Registered on their team', asy
 // A program's own limit on new players (division seats don't decide it).
 const setSpots = (name: string, spots: number | null, whenFull?: 'waitlist' | 'close') => {
   const o = C.offerings(cid).find((x) => x.name === name)!
-  C.saveOffering(cid, o.id, { name: o.name, division_id: o.division_id, min_age: o.min_age, max_age: o.max_age, capacity: spots, reg_mode: o.reg_mode, when_full: whenFull }, A)
+  C.saveOffering(cid, o.id, { name: o.name, division_id: o.division_id, min_age: o.min_age, max_age: o.max_age, capacity: spots, reg_mode: o.reg_mode, when_full: whenFull, protect_at: null }, A)
 }
 test('full program: free waitlist, no charge, not draftable; an offered spot registers when paid', async () => {
+  // The free waitlist (no card saved) — the line with a card is in line.test.ts.
+  C.saveCampaign(C.campaignBySlug('2027-spring')!.id, { name: '2027 Spring', line_card: false }, 'test')
   // T-Ball takes 2 new players; Ben has one spot.
   setSpots('T-Ball', 2)
   await C.startCheckout('2027-spring', family([kid('Cal', '2021-02-01', 'T-Ball')]), base).then((r) => paid(r.orderId))

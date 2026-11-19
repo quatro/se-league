@@ -11,7 +11,8 @@ process.env.AUTH_DB_PATH = path.join(dir, 'auth.db') // never the real shared lo
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake'
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test'
 process.env.RESEND_API_KEY = ''
-globalThis.fetch = (async () => new Response(JSON.stringify({ id: 'cs_1', url: 'https://checkout.stripe.com/c/pay/cs_1', status: 'open', payment_status: 'unpaid', metadata: {} }), { status: 200 })) as typeof fetch
+let n = 0
+globalThis.fetch = (async () => { n++; return new Response(JSON.stringify({ id: `cs_${n}`, url: `https://checkout.stripe.com/c/pay/cs_${n}`, status: 'open', payment_status: 'unpaid', metadata: {} }), { status: 200 }) }) as typeof fetch
 
 const L = await import('../src/lib/league.js')
 const C = await import('../src/lib/campaigns.js')
@@ -47,7 +48,8 @@ test('setup: Rookie has 10 seats and 5 returners still to register', () => {
   C.programsFromSeason(cid, A)
   const a = C.availability(rookie())
   assert.equal(a.guard!.buffer, 5, '10 seats − 5 returners outstanding')
-  assert.equal(a.phase, 'open', 'protection is off until turned on')
+  assert.equal(a.phase, 'open', 'seats left over after every returner: new players register')
+  assert.equal(rookie().protect_at, 0, 'a spring program protects returners’ seats from the start')
 })
 
 test('protection: at or under the line, new players wait and returners still register', async () => {
@@ -55,7 +57,9 @@ test('protection: at or under the line, new players wait and returners still reg
   assert.equal(C.availability(rookie()).phase, 'protected')
   assert.equal(pub().offerings.find((o) => o.name === 'Rookie')!.protected, true)
   const n = await C.startCheckout('2027-spring', family([kid('Nia', '2019-08-01')]), base)
-  assert.equal(C.order(n.orderId)!.status, 'waitlisted', 'a new player joins the waitlist')
+  assert.equal(C.order(n.orderId)!.status, 'pending', 'a new player saves a card to join the line')
+  C.handleStripeEvent({ type: 'checkout.session.completed', data: { object: { id: 'cs_1', mode: 'setup', status: 'complete', setup_intent: 'seti_1', metadata: { order_id: n.orderId } } } })
+  assert.equal(C.order(n.orderId)!.status, 'waitlisted', 'card saved: in line')
   assert.equal(C.availability(rookie()).guard!.buffer, 4, 'the waitlist is already in line')
   const r = await C.startCheckout('2027-spring', family([{ ...kid('Ann', '2019-01-15'), returning: enr('Ann Kid').kid_id }]), base)
   assert.equal(C.order(r.orderId)!.status, 'pending', 'a returner goes straight to payment')
