@@ -1126,6 +1126,7 @@ export function adminCampaign(id: string) {
   })).filter((w) => w.players.length || w.forecast)
   const pos = new Map(waitlist.flatMap((w) => w.players.map((p) => [p.id, p.pos] as const)))
   return {
+    roster: roster(c, os, ps, lines, offs, pos),
     churn: churnTable(c), defaultLineMessage: DEFAULT_LINE_MESSAGE,
     campaign: c, waitlist, mail: mailConfigured(), offerHours: OFFER_HOURS, url: `${config.baseUrl}/register/${c.slug}`, stripe: stripeConfigured() ? stripeMode() : null, webhook: !!config.stripe.webhookSecret,
     payments: { mode: stripeMode(), testKey: !!stripeKeys().test, liveWhy: liveReady() },
@@ -1148,6 +1149,67 @@ export function adminCampaign(id: string) {
     })),
   }
 }
+/**
+ * The Players tab: everyone who signed up for this registration, one row per player, with where they stand
+ * (registered, in line, checking out…) and where their money stands (paid, on a plan, card saved, owes).
+ * For the spring league, also the returners expected back who haven't registered yet.
+ */
+type Line = { order_player_id: string; name: string; qty: number; unit_cents: number; charged: number; tag: string }
+function roster(c: Campaign, os: Order[], ps: OrderPlayer[], lines: Line[], offs: Offering[], pos: Map<string, number>) {
+  const t = today(), now = new Date().toISOString()
+  const plans = new Map<string, { paid: number; total: number; open: number; late: boolean; failed: boolean; next: { due: string; cents: number } | null; n: number; count: number }>()
+  for (const o of os) {
+    if (!(o as Order & { plan?: number }).plan) continue
+    const ins = installmentsFor(o.id).filter((i) => i.status !== 'void')
+    const open = ins.filter((i) => i.status === 'due' || i.status === 'failed')
+    plans.set(o.id, { paid: ins.filter((i) => i.status === 'paid').reduce((a, i) => a + i.amount_cents, 0), total: ins.reduce((a, i) => a + i.amount_cents, 0),
+      open: open.reduce((a, i) => a + i.amount_cents, 0), late: open.some((i) => i.due_date < t), failed: open.some((i) => i.status === 'failed'),
+      next: open[0] ? { due: open[0].due_date, cents: open[0].amount_cents } : null, n: ins.filter((i) => i.status === 'paid' || i.status === 'waived').length, count: ins.length })
+  }
+  const byOrder = new Map(os.map((o) => [o.id, o]))
+  const players = ps.filter((p) => p.status !== 'cancelled' && !(p.status === 'pending' && byOrder.get(p.order_id)!.status === 'cancelled')).map((p) => {
+    const o = byOrder.get(p.order_id)!, g = J<CheckoutInput['guardian']>(o.guardian, {} as CheckoutInput['guardian'])
+    const mine = lines.filter((l) => l.order_player_id === p.id), sum = (ls: Line[]) => ls.reduce((a, l) => a + l.unit_cents * l.qty, 0)
+    const fee = sum(mine), charged = sum(mine.filter((l) => l.charged))
+    const reg = p.status === 'offered' && offerExpired(p, now) ? 'expired' : p.status
+    const plan = plans.get(o.id)
+    // Money, for this player. A plan covers the whole family's order, so it's shown at the family level.
+    const pay = o.status === 'refunded' ? { state: 'refunded' }
+      : reg === 'registered' && plan ? { state: plan.open ? (plan.failed ? 'plan_failed' : plan.late ? 'plan_late' : 'plan') : 'paid', paid: plan.paid, total: plan.total, owed: plan.open, next: plan.next, n: plan.n, count: plan.count }
+      : reg === 'registered' ? { state: fee && charged < fee ? 'owes' : fee ? 'paid' : 'free', paid: charged, owed: fee - charged }
+      : ['waitlisted', 'offered', 'expired', 'held'].includes(reg) ? { state: o.stripe_pm_id ? 'card' : 'none', owed: fee - charged, card: o.stripe_pm_id ? o.card_label || 'Card on file' : '' }
+      : reg === 'pending' ? { state: 'checkout', owed: fee } : { state: 'none', owed: 0 }
+    return {
+      id: p.id, order_id: o.id, kid_id: p.kid_id, name: `${p.first_name} ${p.last_name}`, birthdate: p.birthdate, offering_id: p.offering_id,
+      program: offs.find((x) => x.id === p.offering_id)?.name ?? '?', returning: !!p.held_seat || (!!p.prior_match && p.prior_match !== 'new'), held_seat: !!p.held_seat,
+      status: reg, line_pos: pos.get(p.id) ?? null, offer_expires_at: p.offer_expires_at, offer_url: p.status === 'offered' && p.offer_token ? offerLink(c, p.offer_token, config.baseUrl) : null,
+      error: p.early_error || '', signed_up: o.created_at, family: `${g.firstName ?? ''} ${g.lastName ?? ''}`.trim(), email: g.email ?? '', phone: g.phone ?? '',
+      test: o.stripe_mode === 'test', in_se: !!o.se_synced_at, pay, fee, family_plan: !!plan && ps.filter((x) => x.order_id === o.id && x.status === 'registered').length > 1,
+    }
+  })
+  // Returners still expected (spring, tied to a season): who we're holding seats for and haven't heard from.
+  const waiting: { kid_id: string; name: string; division: string; offering_id: string; prior: string; status: string; intent: string; contact: string; email: string; phone: string }[] = []
+  if (c.kind === 'spring' && c.season_id) {
+    const divs = new Map<string, string>()
+    // Each season division → the program that registers it (its own, else the group's, e.g. Minors → Major/Minor).
+    for (const o of offs) if (o.division_id) for (const id of seatDivisions(o)) if (!divs.has(id)) divs.set(id, o.id)
+    for (const o of offs) if (o.division_id) divs.set(o.division_id, o.id)
+    if (divs.size) {
+      const rows = db.prepare(`SELECT e.kid_id, k.name, d.name division, e.division_id, e.prior, e.status, e.intent FROM enrollments e JOIN kids k ON k.id = e.kid_id JOIN divisions d ON d.id = e.division_id
+        WHERE e.season_id = ? AND e.status IN ('Expected','Need to contact') AND e.division_id IN (${[...divs.keys()].map(() => '?').join(',')}) ORDER BY d.sort, k.name`)
+        .all(c.season_id, ...divs.keys()) as { kid_id: string; name: string; division: string; division_id: string; prior: string; status: string; intent: string }[]
+      const signed = new Set(ps.filter((p) => p.kid_id && p.status !== 'cancelled').map((p) => p.kid_id))
+      const ct = db.prepare('SELECT name, email, phone FROM contacts WHERE kid_id = ? ORDER BY created_at LIMIT 1')
+      for (const r of rows) {
+        if (signed.has(r.kid_id)) continue
+        const k = ct.get(r.kid_id) as { name: string; email: string; phone: string } | undefined
+        waiting.push({ kid_id: r.kid_id, name: r.name, division: r.division, offering_id: divs.get(r.division_id)!, prior: r.prior, status: r.status, intent: r.intent, contact: k?.name ?? '', email: k?.email ?? '', phone: k?.phone ?? '' })
+      }
+    }
+  }
+  return { players, returners: waiting }
+}
+
 export function markSynced(orderIds: string[], on: boolean, actor: string) {
   const up = db.prepare('UPDATE orders SET se_synced_at = ? WHERE id = ?')
   db.transaction(() => orderIds.forEach((id) => up.run(on ? new Date().toISOString() : null, id)))()

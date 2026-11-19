@@ -138,6 +138,19 @@ test('Accept: charges the saved card and registers; the line moves up; a decline
   assert.equal(op(ids[3]!).status, 'cancelled')
 })
 
+test('Players tab: one row per player with registration and payment status, plus returners still to register', () => {
+  const r = C.adminCampaign(cid).roster
+  const row = (name: string) => r.players.find((p) => p.name === name)!
+  assert.deepEqual([row('Ava New').status, row('Ava New').pay.state, row('Ava New').returning], ['registered', 'paid', false])
+  assert.equal(row('Ben New').status, 'offered', 'declined card: holding the spot with a pay link')
+  assert.ok(row('Ben New').offer_url)
+  assert.deepEqual([row('Cal New').status, row('Cal New').line_pos, row('Cal New').pay.state, row('Cal New').pay.owed], ['waitlisted', 2, 'card', 20000])
+  assert.equal(r.players.find((p) => p.name === 'Dee New'), undefined, 'removed from the line')
+  assert.equal(r.returners.length, 10, 'all ten Rookie returners still to register')
+  assert.ok(r.returners.every((x) => x.offering_id === rookie().id && x.division === 'Rookie'))
+  assert.equal(r.returners.filter((x) => x.intent === 'yes').length, 1)
+})
+
 test('a family that joined without a card (line card off) gets Offer spot, not a charge', async () => {
   C.saveCampaign(cid, { name: '2027 Spring', line_card: false }, A)
   const r = await C.startCheckout('2027-spring', fam('Ed', 'Eli'), base)

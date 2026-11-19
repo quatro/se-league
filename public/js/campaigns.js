@@ -7,8 +7,8 @@
    in a focused dialog, never in a grid of always-open inputs. */
 'use strict';
 
-const CS = { list: [], id: null, data: null, filter: 'paid', busy: false, section: 'details' };
-try { CS.section = localStorage.getItem('league-reg-section') || 'details'; } catch { /* private mode */ }
+const CS = { list: [], id: null, data: null, filter: 'paid', busy: false, section: 'details', pf: { q: '', div: '', show: 'signed', who: '' } };
+try { CS.section = localStorage.getItem('league-reg-section') || 'players'; } catch { /* private mode */ }
 const dollars = (c) => `$${(c / 100).toFixed(2)}`;
 const cash = (c) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: c % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 const QTYPES = { text: 'Short answer', textarea: 'Paragraph', number: 'Number', date: 'Date', yesno: 'Yes / No', select: 'Pick one', multi: 'Pick any', agreement: 'Agreement (must tick)' };
@@ -88,9 +88,11 @@ function renderCampaigns() {
   const qOn = d.questions.filter((q) => q.active).length, iOn = d.items.filter((i) => i.active).length, progOn = d.offerings.filter((o) => o.reg_mode !== 'closed').length;
   const waiting = d.waitlist.reduce((a, w) => a + w.players.length, 0);
   const plan = c.plan_installments >= 2 && c.plan_final_date, planWorks = plan && planPreview(sampleTotal(), c.plan_installments, c.plan_final_date);
-  const SECTIONS = [['details', 'Details', ''], ['programs', 'Divisions', progOn], ['fees', 'Fees', iOn], ['questions', 'Questions', qOn], ['plan', 'Payment plan', plan ? (planWorks ? 'On' : '!') : 'Off'],
-    ['waitlist', c.kind === 'spring' ? 'Waiting line' : 'Waitlist', waiting], ['orders', 'Orders', d.orders.filter((o) => o.status === 'paid').length]];
-  if (!SECTIONS.some(([k]) => k === CS.section)) CS.section = 'details';
+  // Two kinds of tab: what's happening (sign-ups as they come in) and how the registration is set up.
+  const LIVE = [['players', 'Players', t.players], ['waitlist', c.kind === 'spring' ? 'Waiting line' : 'Waitlist', waiting], ['orders', 'Orders', d.orders.filter((o) => o.status === 'paid').length]];
+  const SETUP = [['details', 'Details', ''], ['programs', 'Divisions', progOn], ['fees', 'Fees', iOn], ['questions', 'Questions', qOn], ['plan', 'Payment plan', plan ? (planWorks ? 'On' : '!') : 'Off']];
+  const SECTIONS = [...LIVE, ...SETUP];
+  if (!SECTIONS.some(([k]) => k === CS.section)) CS.section = 'players';
 
   ed.innerHTML = `
   <div class="panel reghero">
@@ -113,10 +115,12 @@ function renderCampaigns() {
   </div>
 
   <nav class="secnav" role="tablist" aria-label="Registration sections">
-    ${SECTIONS.map(([k, l, n]) => `<button role="tab" aria-selected="${CS.section === k}" data-sec="${k}">${l}${n !== '' ? ` <span class="cnt ${n === '!' ? 'warn' : ''}" ${n === '!' ? 'title="Set up, but families aren’t being offered it — see why"' : ''}>${n}</span>` : ''}</button>`).join('')}
+    ${[['live', 'Sign-ups', LIVE], ['setup', 'Setup', SETUP]].map(([g, label, tabs]) => `<div class="secgrp ${g}" role="presentation"><span class="seclbl" aria-hidden="true">${label}</span><div class="sectabs">
+      ${tabs.map(([k, l, n]) => `<button role="tab" aria-selected="${CS.section === k}" data-sec="${k}">${l}${n !== '' ? ` <span class="cnt ${n === '!' ? 'warn' : ''}" ${n === '!' ? 'title="Set up, but families aren’t being offered it — see why"' : ''}>${n}</span>` : ''}</button>`).join('')}</div></div>`).join('')}
   </nav>
   <div id="regSection">${sectionHtml(CS.section)}</div>`;
   if (CS.section === 'orders') renderOrders();
+  if (CS.section === 'players') renderPlayers();
 }
 
 function sectionHtml(s) {
@@ -199,6 +203,7 @@ function sectionHtml(s) {
     </div></div>`;
   }
   if (s === 'waitlist') return waitlistPanel(d);
+  if (s === 'players') return playersPanel(d);
   return `<div class="panel"><div class="hd"><h2>Orders</h2><div class="row">
       <select id="ordFilter" style="width:auto" aria-label="Show">${[['paid', 'Paid'], ['unsynced', 'Paid, not in SportsEngine'], ['waitlisted', 'Waitlist'], ['pending', 'Checkout in progress'], ['refunded', 'Refunded'], ['cancelled', 'Abandoned'], ['all', 'All']].map(([v, l]) => `<option value="${v}" ${CS.filter === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <a class="btn" href="${esc(CA('/export.csv?unsynced=1'))}">Export new for SportsEngine</a><a class="linkbtn" href="${esc(CA('/export.csv'))}">Export all</a></div></div>
@@ -232,6 +237,103 @@ function waitlistPanel(d) {
       ${w.players.length ? `<div class="scroll"><table class="kt"><tr><th class="num">#</th><th>Player</th><th>Family</th><th>Joined</th><th class="num">Owes</th><th>Status</th><th></th></tr>
       ${w.players.map((p) => row(p, w)).join('')}</table></div>` : ''}`).join('') : '<p class="lead">Nobody is waiting.</p>'}
   </div></div>`;
+}
+
+/* Players: everyone signed up, one row per player — new or returning, where their registration stands and where
+   their money stands — with the line's actions right on the row. Spring also lists returners still to register. */
+const REG_STATE = { registered: ['Registered', 'ok'], waitlisted: ['In line', 'wait'], offered: ['Offered a spot', 'warn'], expired: ['Offer expired', 'bad'], held: ['Saving card', 'warn'], pending: ['Checking out', 'warn'], returner: ['Not registered yet', 'muted'] };
+const PL_SHOW = [['signed', 'Everyone signed up'], ['registered', 'Registered'], ['line', 'In line'], ['checkout', 'Checking out'], ['owes', 'Owes money'], ['returners', 'Returners not registered yet'], ['all', 'Everyone, incl. returners not registered']];
+const PL_INTENT = { yes: 'Said they’re coming back', no: 'Said they’re not coming back', unsure: 'Unsure' };
+function playersPanel(d) {
+  const r = d.roster, spring = d.campaign.kind === 'spring';
+  const by = (id) => r.players.filter((p) => p.offering_id === id);
+  const rows = d.offerings.filter((o) => o.reg_mode !== 'closed' || by(o.id).length).map((o) => {
+    const ps = by(o.id), reg = ps.filter((p) => p.status === 'registered');
+    return { o, ret: reg.filter((p) => p.returning).length, neu: reg.filter((p) => !p.returning).length, line: ps.filter((p) => ['waitlisted', 'offered', 'expired', 'held'].includes(p.status)).length,
+      out: r.returners.filter((x) => x.offering_id === o.id).length, owes: ps.filter((p) => ['owes', 'plan_late', 'plan_failed'].includes(p.pay.state)).length };
+  });
+  const sum = (k) => rows.reduce((a, x) => a + x[k], 0);
+  const cell = (n, div, show, cls = '') => (n ? `<button class="linkbtn ${cls}" data-pdiv="${esc(div)}" data-pshow="${show}">${n}</button>` : '<span class="sub">0</span>');
+  return `<div class="panel"><div class="hd"><h2>Players</h2><a class="linkbtn" href="${esc(CA('/export.csv'))}">Export</a></div><div class="bd">
+    <div class="scroll"><table class="kt plsum"><tr><th>Division</th><th class="num">Returning</th><th class="num">New</th><th class="num">Registered</th>${spring ? '<th class="num" title="Returners we’re holding a seat for who haven’t registered yet">Returners still to register</th>' : ''}<th class="num">In line</th><th class="num">Owes</th><th class="num">Spots</th></tr>
+      ${rows.map((x) => `<tr class="${CS.pf.div === x.o.id ? 'on' : ''}"><td><button class="linkbtn" data-pdiv="${esc(x.o.id)}" data-pshow="signed"><b>${esc(x.o.name)}</b></button></td>
+        <td class="num">${x.ret}</td><td class="num">${x.neu}</td><td class="num">${cell(x.ret + x.neu, x.o.id, 'registered')}</td>${spring ? `<td class="num">${cell(x.out, x.o.id, 'returners')}</td>` : ''}
+        <td class="num">${cell(x.line, x.o.id, 'line', 'warn-text')}</td><td class="num">${cell(x.owes, x.o.id, 'owes', 'warn-text')}</td>
+        <td class="num sub">${x.o.guard ? `${Math.max(0, x.o.guard.capacity - x.o.guard.registered - x.o.guard.outstanding)} open of ${x.o.guard.capacity}` : x.o.capacity != null ? `${x.o.taken ?? 0} of ${x.o.capacity} taken` : '—'}</td></tr>`).join('')}
+      <tr class="tot"><td><button class="linkbtn" data-pdiv="" data-pshow="signed"><b>All divisions</b></button></td><td class="num">${sum('ret')}</td><td class="num">${sum('neu')}</td><td class="num">${sum('ret') + sum('neu')}</td>${spring ? `<td class="num">${sum('out')}</td>` : ''}<td class="num">${sum('line')}</td><td class="num">${sum('owes')}</td><td></td></tr></table></div>
+    <div class="row plfilters">
+      <input type="search" data-pf="q" placeholder="Search player or family" value="${esc(CS.pf.q)}" aria-label="Search players">
+      <select data-pf="div" aria-label="Division"><option value="">All divisions</option>${d.offerings.map((o) => `<option value="${esc(o.id)}" ${CS.pf.div === o.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select>
+      <select data-pf="show" aria-label="Show">${PL_SHOW.filter(([k]) => spring || !['returners', 'all'].includes(k)).map(([k, l]) => `<option value="${k}" ${CS.pf.show === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select data-pf="who" aria-label="New or returning"><option value="">New &amp; returning</option><option value="new" ${CS.pf.who === 'new' ? 'selected' : ''}>New only</option><option value="returning" ${CS.pf.who === 'returning' ? 'selected' : ''}>Returning only</option></select>
+      <span class="sub" id="plCount"></span></div>
+    <div class="scroll"><table class="kt plt" id="plTable"></table></div></div></div>`;
+}
+/* Two quiet lines per cell: what it is (a status dot + plain text), then the detail in muted type. */
+const st = (cls, text) => `<span class="st ${cls}">${text}</span>`;
+const two = (main, sub = '') => `<div class="c1">${main}</div>${sub ? `<div class="c2">${sub}</div>` : ''}`;
+function payCell(p) {
+  const x = p.pay, test = p.test ? ' · test' : '';
+  switch (x.state) {
+    case 'paid': return two(st('ok', `Paid ${dollars(x.paid)}`), test.slice(3));
+    case 'free': return two(st('ok', 'No charge'));
+    case 'owes': return two(st('warn', `Owes ${dollars(x.owed)}`), `${dollars(x.paid)} paid${test}`);
+    case 'plan': case 'plan_late': case 'plan_failed': {
+      const pct = x.total ? Math.round((100 * x.paid) / x.total) : 0;
+      const head = x.state === 'plan' ? st('plan', `${dollars(x.paid)} <span class="of">of ${dollars(x.total)}</span>`) : st('bad', x.state === 'plan_late' ? 'Past due' : 'Card declined');
+      const sub = `${p.family_plan ? 'Family plan' : 'Plan'} · ${x.n} of ${x.count} paid${x.next ? ` · next ${dollars(x.next.cents)} ${esc(dayLocal(x.next.due).replace(/, \d{4}$/, ''))}` : ''}${test}`;
+      return `${two(head, sub)}<div class="pbar" role="img" aria-label="${pct}% paid"><i style="width:${pct}%"></i></div>`;
+    }
+    case 'card': return two(st('wait', 'Card saved'), `${esc(x.card.replace(/ \(exp .*\)$/, ''))} · ${dollars(x.owed)} when let in`);
+    case 'checkout': return two(st('warn', 'Not paid yet'), `${dollars(x.owed)} at checkout`);
+    case 'refunded': return two(st('muted', 'Refunded'));
+    default: return p.status === 'returner' ? '<span class="c2">—</span>' : two(st('warn', 'No card'), x.owed ? `${dollars(x.owed)} when offered` : '');
+  }
+}
+function shownPlayers() {
+  const d = CS.data, f = CS.pf, q = f.q.trim().toLowerCase();
+  const rets = d.roster.returners.map((x) => ({ ...x, est: x.status, id: `r:${x.kid_id}`, status: 'returner', returning: true, program: d.offerings.find((o) => o.id === x.offering_id)?.name ?? x.division, family: x.contact, pay: { state: 'none' } }));
+  const pool = f.show === 'returners' ? rets : f.show === 'all' ? [...d.roster.players, ...rets] : d.roster.players;
+  return pool.filter((p) => {
+    if (f.div && p.offering_id !== f.div) return false;
+    if (f.who === 'new' && p.returning) return false;
+    if (f.who === 'returning' && !p.returning) return false;
+    if (f.show === 'registered' && p.status !== 'registered') return false;
+    if (f.show === 'line' && !['waitlisted', 'offered', 'expired', 'held'].includes(p.status)) return false;
+    if (f.show === 'checkout' && p.status !== 'pending') return false;
+    if (f.show === 'owes' && !['owes', 'plan_late', 'plan_failed'].includes(p.pay.state)) return false;
+    if (q && !`${p.name} ${p.family} ${p.email} ${p.phone}`.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a, b) => a.program.localeCompare(b.program) || (a.status === 'returner') - (b.status === 'returner') || (a.line_pos ?? 0) - (b.line_pos ?? 0) || a.name.localeCompare(b.name));
+}
+function renderPlayers() {
+  const el = $('plTable'); if (!el) return;
+  const d = CS.data, ps = shownPlayers(), when = (iso) => (iso ? new Date(iso.replace(' ', 'T') + (iso.includes('Z') || iso.includes('+') ? '' : 'Z')).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+  $('plCount').textContent = `${ps.length} ${ps.length === 1 ? 'player' : 'players'}`;
+  const fc = (id) => d.waitlist.find((w) => w.offering_id === id)?.forecast;
+  const actions = (p) => {
+    if (p.status === 'returner') return '';
+    const b = [], f = fc(p.offering_id);
+    if (p.pay.state === 'card' && p.status === 'waitlisted' && canEdit()) b.push(`<button class="btn primary mini" data-laccept="${esc(p.id)}" data-who="${esc(p.name)}" data-due="${p.pay.owed}" data-card="${esc(p.pay.card)}" data-room="${f ? f.room : ''}" data-open="${f ? f.open : ''}" data-pos="${p.line_pos ?? ''}" data-program="${esc(p.program)}">Let in</button>`);
+    if (p.offer_url) b.push(`<button class="mini" data-copy="${esc(p.offer_url)}">Copy pay link</button>`);
+    if (['waitlisted', 'offered', 'expired'].includes(p.status) && !(p.pay.state === 'card' && p.status === 'waitlisted') && canEdit()) b.push(`<button class="mini" data-offer="${esc(p.id)}" data-who="${esc(p.name)}" data-due="${p.pay.owed}">${p.status === 'waitlisted' ? 'Offer the spot' : 'Offer again'}</button>`);
+    if (['waitlisted', 'offered', 'expired', 'held'].includes(p.status) && canEdit()) b.push(`<button class="mini" data-remove="${esc(p.id)}">Remove</button>`);
+    return b.join(' ');
+  };
+  const reg = (p) => {
+    const [l, c] = REG_STATE[p.status] ?? [p.status, ''];
+    const extra = p.status === 'waitlisted' && p.line_pos ? ` #${p.line_pos}` : '';
+    const sub = p.status === 'returner' ? [p.est, PL_INTENT[p.intent]].filter(Boolean).join(' · ') : p.status === 'offered' ? `Pay by ${when(p.offer_expires_at)}` : p.status === 'registered' && p.in_se ? 'In SportsEngine' : '';
+    return two(st(c, `${l}${extra}`), [sub && esc(sub), p.error && `<span class="err-text">${esc(p.error)}</span>`].filter(Boolean).join('<br>'));
+  };
+  el.innerHTML = '<tr><th>Player</th><th>Division</th><th>Registration</th><th>Payment</th><th>Family</th><th>Signed up</th><th></th></tr>'
+    + (ps.length ? ps.map((p) => `<tr class="${p.status === 'returner' ? 'pending-ret' : ''}">
+      <td>${two(`<button class="linkbtn plname" ${p.kid_id ? `data-kid="${esc(p.kid_id)}"` : 'disabled'}>${esc(p.name)}</button>`, `${p.returning ? 'Returning' : 'New'}${p.prior ? ` · ${esc(p.prior)}` : ''}`)}</td>
+      <td>${esc(p.program)}</td><td>${reg(p)}</td><td>${payCell(p)}</td>
+      <td>${two(esc(p.family || '—'), [p.phone, p.email].filter(Boolean).map((v) => `<span class="nw">${esc(v)}</span>`).join('<br>'))}</td>
+      <td class="c2" style="white-space:nowrap" title="${esc(when(p.signed_up))}">${p.signed_up ? esc(when(p.signed_up).replace(/,? \d+:\d+ [AP]M$/, '')) : ''}</td>
+      <td style="white-space:nowrap">${actions(p)}</td></tr>`).join('')
+      : `<tr><td colspan="7" class="note">${CS.pf.show === 'returners' ? 'Every returner expected back has registered.' : 'No players match.'}</td></tr>`);
 }
 
 /* Test (sandbox) or live payments, for every new checkout. Orders already made keep their own account. */
@@ -601,6 +703,7 @@ $('campEditor').addEventListener('click', async (e) => {
     document.querySelectorAll('.secnav [data-sec]').forEach((b) => b.setAttribute('aria-selected', b.dataset.sec === sec));
     $('regSection').innerHTML = sectionHtml(sec);
     if (sec === 'orders') renderOrders();
+    if (sec === 'players') renderPlayers();
     return;
   }
   const a = t.dataset.act, id = t.dataset.id, d = CS.data;
@@ -627,6 +730,7 @@ $('campEditor').addEventListener('click', async (e) => {
     if (await act('POST', CA('/orders/synced'), { ids, on: true })) loadCampaigns();
     return;
   }
+  if (t.dataset.pdiv !== undefined) { CS.pf.div = t.dataset.pdiv; CS.pf.show = t.dataset.pshow || CS.pf.show; $('regSection').innerHTML = sectionHtml('players'); return renderPlayers(); }
   if (t.dataset.kid) return showKid(t.dataset.kid);
   if (t.dataset.laccept) return acceptLineDialog(t);
   if (t.matches('[data-churn]')) return churnDialog();
@@ -639,9 +743,11 @@ $('campEditor').addEventListener('click', async (e) => {
     if (await act('POST', CA(`/players/${encodeURIComponent(t.dataset.remove)}/remove`), {})) loadCampaigns();
   }
 });
+$('campEditor').addEventListener('input', (e) => { if (e.target.matches('[data-pf=q]')) { CS.pf.q = e.target.value; renderPlayers(); } });
 $('campEditor').addEventListener('change', async (e) => {
   const t = e.target;
   if (t.id === 'ordFilter') { CS.filter = t.value; return renderOrders(); }
+  if (t.matches('[data-pf]')) { CS.pf[t.dataset.pf] = t.value; return renderPlayers(); }
   const ord = t.closest('[data-ord]');
   if (ord && t.matches('[data-synced]')) { if (await act('POST', CA('/orders/synced'), { ids: [ord.dataset.ord], on: t.checked })) loadCampaigns(); return; }
 });

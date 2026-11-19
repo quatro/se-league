@@ -327,7 +327,7 @@ async function showKid(kidId) {
     <table class="hist"><tr><th>Season</th><th>Age</th><th>Division</th><th>Team</th><th>Record</th><th>How</th><th>Status</th></tr>
     ${h.seasons.map((s) => `<tr><td>${s.year}</td><td>${esc(s.age ?? '')}</td><td>${esc(s.division || '—')}</td><td>${esc(s.team || '—')}</td><td>${esc(s.record || '')}</td><td>${esc(s.how)}</td><td><i class="dot ${dotCls(s.status)}"></i> ${esc(s.status)}</td></tr>`).join('')}</table>
     ${h.registrations.length ? `<h3>Registrations</h3><table class="kt">${h.registrations.map((r) => `<tr><td>${esc(r.received_at)}</td><td>${esc(r.season_id || '')}</td><td>${esc(r.program || '')}</td><td>${esc(r.outcome)}</td><td>${esc(r.note)}</td></tr>`).join('')}</table>` : ''}
-    <h3>History</h3>${h.audit.length ? `<table class="kt">${h.audit.map((a) => `<tr><td>${esc(a.at)}</td><td>${esc(a.season_id || '')}</td><td>${esc(a.actor)}</td><td>${esc(a.action.replace(/_/g, ' '))}</td><td class="mono">${esc(a.detail)}</td></tr>`).join('')}</table>` : '<p class="note">No changes recorded.</p>'}
+    <h3>History</h3>${h.audit.length ? `<table class="kt atab"><tr><th>When</th><th>What happened</th><th>Who</th></tr>${h.audit.map((a) => `<tr><td class="awhen">${auditWhen(a.at)}</td><td>${auditWhat(a)}${a.season_id ? `<div class="sub">${esc(a.season_id)} season</div>` : ''}</td><td class="sub awho">${esc(a.actor)}</td></tr>`).join('')}</table>` : '<p class="note">No changes recorded.</p>'}
     <div class="row"><span class="spacer"></span><button class="btn" data-close>Close</button></div></form>`, (d) => {
     d.querySelector('#kcAdd').onclick = async () => {
       const v = (id) => d.querySelector(id).value.trim();
@@ -915,12 +915,37 @@ $('mSave').onclick = async () => {
   if (r) { toast(`${LABELS[r.outcome] || r.outcome}: ${r.note}`); ['mFirst', 'mLast', 'mDob', 'mProgram'].forEach((i) => ($(i).value = '')); loadRegs(); }
 };
 
+/* Audit entries: a readable "what happened" and its details as label/value lines, never raw JSON. */
+const HIDE_KEYS = new Set(['order', 'errors']);
+const human = (k) => { const t = k.replace(/_/g, ' '); return t.charAt(0).toUpperCase() + t.slice(1); };
+const val = (v) => (v == null || v === '' ? '—' : Array.isArray(v) ? v.map(val).join(', ') : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : typeof v === 'object' ? Object.entries(v).map(([k, x]) => `${human(k)} ${val(x)}`).join(', ') : String(v));
+function auditDetail(raw) {
+  if (!raw) return '';
+  let d; try { d = JSON.parse(raw); } catch { return `<div class="adet"><span>${esc(raw)}</span></div>`; }
+  if (d == null || typeof d !== 'object') return `<div class="adet"><span>${esc(String(d))}</span></div>`;
+  const lines = [];
+  // A field that changed: status {from, to} → "Status: Expected → Not returning". Unchanged fields aren't news.
+  const changed = Object.entries(d).filter(([, v]) => v && typeof v === 'object' && !Array.isArray(v) && 'from' in v && 'to' in v);
+  const flag = (k, x) => (/locked|^tryout$|^returner$/.test(k) && (x === 0 || x === 1) ? (x ? 'On' : 'Off') : val(x));
+  for (const [k, v] of changed) if (JSON.stringify(v.from) !== JSON.stringify(v.to)) lines.push([human(k), `${flag(k, v.from)} → ${flag(k, v.to)}`]);
+  if ('from' in d && 'to' in d && typeof d.from !== 'object') lines.push(['Change', `${val(d.from)} → ${val(d.to)}`]);
+  for (const [k, v] of Object.entries(d)) {
+    if (changed.some(([c]) => c === k) || (('from' in d && 'to' in d) && (k === 'from' || k === 'to')) || HIDE_KEYS.has(k)) continue;
+    if (Array.isArray(v) && !v.length) continue;
+    lines.push([human(k), val(v)]);
+  }
+  return lines.length ? `<dl class="adet">${lines.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>` : '';
+}
+const auditWhen = (at) => { const t = new Date(String(at).replace(' ', 'T') + (String(at).includes('Z') ? '' : 'Z')); return isNaN(t) ? esc(at) : `${esc(t.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }))}<div class="sub">${esc(t.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }))}</div>`; };
+const auditWhat = (a) => `<b>${esc(human(a.action))}</b>${auditDetail(a.detail)}`;
+
 /* ---------- activity ---------- */
 async function loadLog() { S.log = await call('GET', `/api/admin/audit?season=${encodeURIComponent(S.sid)}`).catch(() => null); if (S.tab === 'log') renderLog(); }
 function renderLog() {
   if (!S.log) { $('logTable').innerHTML = '<tr><td class="note">Loading…</td></tr>'; return; }
-  $('logTable').innerHTML = '<tr><th>When (UTC)</th><th>Season</th><th>Who</th><th>What</th><th>Kid</th><th>Detail</th></tr>'
-    + S.log.map((a) => `<tr><td class="sub">${esc(a.at)}</td><td>${esc(a.season_id || '')}</td><td>${esc(a.actor)}</td><td>${esc(a.action.replace(/_/g, ' '))}</td><td>${a.kid_id ? `<button class="mini" data-kid="${esc(a.kid_id)}" style="border:0;background:none;padding:0">${esc(a.kid_name || '?')}</button>` : ''}</td><td class="mono">${esc(a.detail)}</td></tr>`).join('');
+  $('logTable').classList.add('atab');
+  $('logTable').innerHTML = '<tr><th>When</th><th>Kid</th><th>What happened</th><th>Who</th><th>Season</th></tr>'
+    + S.log.map((a) => `<tr><td class="awhen">${auditWhen(a.at)}</td><td>${a.kid_id ? `<button class="linkbtn" data-kid="${esc(a.kid_id)}">${esc(a.kid_name || '?')}</button>` : ''}</td><td>${auditWhat(a)}</td><td class="sub awho">${esc(a.actor)}</td><td class="sub">${esc(a.season_id || '')}</td></tr>`).join('');
 }
 $('logRefresh').onclick = loadLog;
 $('logTable').onclick = (e) => { const kb = e.target.closest('[data-kid]'); if (kb) showKid(kb.dataset.kid); };

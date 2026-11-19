@@ -465,7 +465,14 @@ dialog.wide{width:min(920px,calc(100% - 24px));max-height:calc(100vh - 32px)}
 .rstat b{font-family:var(--display);font-size:1.7rem;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
 .rstat span{font-size:.8rem;color:var(--muted)}
 .rstat.warn b{color:var(--warn)}
-.secnav{display:flex;gap:2px;border-bottom:2px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.secnav{display:flex;gap:28px;align-items:flex-end;border-bottom:2px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.secgrp{display:flex;flex-direction:column;gap:2px;flex:none}
+.secgrp.setup{margin-left:auto;padding-left:22px;border-left:1px solid var(--line)}
+.sectabs{display:flex;gap:2px}
+.seclbl{display:inline-flex;align-items:center;gap:6px;padding:0 14px;font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.secgrp.live .seclbl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
+.secgrp.setup .seclbl::before{content:"⚙";font-size:.85rem;letter-spacing:0;line-height:1}
+.secgrp.setup button{font-weight:500}
 .secnav button{background:none;border:0;border-bottom:3px solid transparent;margin-bottom:-2px;padding:10px 14px;font-weight:600;color:var(--muted);white-space:nowrap;font-size:.95rem}
 .secnav button:hover{color:var(--ink)}
 .secnav button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--stitch)}
@@ -1167,3 +1174,44 @@ html:has(main.reg){scroll-padding:28px 0 96px}
 p.linemsg{margin:0 0 8px}
 blockquote.linemsg{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--line);color:var(--muted, inherit)}
 button.chip{background:none;cursor:pointer;font-family:inherit}
+
+/* Registration → Players */
+.tag.bad{color:var(--stitch);background:color-mix(in srgb,var(--stitch) 12%,transparent)}
+.chip.mini-chip{font-size:.68rem;padding:0 6px;vertical-align:1px}
+.plsum{margin-bottom:14px}
+.plsum tr.on td{background:color-mix(in srgb,var(--ok) 8%,transparent)}
+.plsum tr.tot td{border-top:2px solid var(--line);font-weight:700}
+.plsum .linkbtn.warn-text{color:var(--warn)}
+.plfilters{gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.plfilters input[type=search]{flex:1 1 220px;width:auto}
+.plfilters select{width:auto}
+.plt tr.pending-ret td{background:color-mix(in srgb,var(--warn) 5%,transparent)}
+.plt td{vertical-align:top}
+.plsum .linkbtn{text-align:left}
+.plt td:nth-child(4){min-width:180px}
+.plt td:nth-child(5){min-width:190px}
+/* Players rows: plain text with a status dot, detail underneath — no pills. */
+.plt td{padding-top:10px;padding-bottom:10px}
+.plt .c1{line-height:1.35}
+.plt .c2{font-size:.8rem;color:var(--muted);line-height:1.4;margin-top:2px}
+.plt .plname{font-weight:700}
+.plt .nw{white-space:nowrap}
+.st{display:inline-flex;align-items:baseline;gap:7px;font-weight:600;color:var(--ink);white-space:nowrap}
+.st::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;background:var(--dot,var(--muted));transform:translateY(-1px)}
+.st.ok{--dot:var(--ok)}.st.warn,.st.wait{--dot:var(--warn)}.st.bad{--dot:var(--stitch)}.st.plan{--dot:var(--ok)}
+.st.wait::before{background:transparent;border:2px solid var(--warn);width:6px;height:6px}
+.st.plan::before{background:conic-gradient(var(--ok) 0 50%,transparent 0);border:1px solid var(--ok);width:7px;height:7px}
+.st .of{font-weight:400;color:var(--muted)}
+.pbar{height:4px;border-radius:2px;background:var(--line);margin-top:6px;max-width:170px;overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--ok);border-radius:2px}
+@media (max-width:700px){.secnav{flex-wrap:wrap;gap:6px;overflow:visible}.secgrp{flex:1 1 100%;min-width:0}.sectabs{overflow-x:auto;scrollbar-width:none}.secgrp.setup{margin-left:0;padding-left:0;border-left:0}}
+@media (min-width:701px){.plt td:first-child{min-width:230px}}
+#view-campaigns,#campEditor{min-width:0}#campEditor{grid-template-columns:minmax(0,1fr)}
+/* History / Activity: readable details instead of raw JSON */
+.atab td{vertical-align:top}
+.atab .awhen{white-space:nowrap;width:1%}
+.atab .awho{white-space:nowrap;width:1%}
+.adet{display:grid;gap:2px;margin:4px 0 0;font-size:.82rem}
+.adet div{display:grid;grid-template-columns:minmax(70px,max-content) 1fr;gap:10px}
+.adet dt{color:var(--muted)}
+.adet dd{margin:0;overflow-wrap:anywhere}
