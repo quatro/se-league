@@ -179,7 +179,7 @@ register.use('/api/admin/campaigns', admin)
 admin.get('/', wrap(() => C.campaigns()))
 const campaignBody = z.object({
   name: z.string().min(1).max(80), slug: z.string().max(60).optional(), season_id: z.union([z.string(), z.null()]).optional(),
-  status: z.enum(['draft', 'open', 'closed']).optional(), opens_at: z.union([z.string().max(40), z.null()]).optional(), closes_at: z.union([z.string().max(40), z.null()]).optional(),
+  status: z.enum(['draft', 'open', 'closed']).optional(),
   intro: z.string().max(10000).optional(), confirmation: z.string().max(10000).optional(),
   kind: z.enum(['spring', 'standard']).optional(),
   plan_installments: z.number().int().min(0).max(12).optional(), plan_final_date: z.union([z.string().max(10), z.null()]).optional(), plan_min_cents: z.number().int().min(0).max(10_000_000).optional(),

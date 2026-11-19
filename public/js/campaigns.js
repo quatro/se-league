@@ -18,7 +18,7 @@ const REG_MODES = {
   closed: ['Closed', 'Hidden from families.'],
 };
 const STATUS = {
-  draft: { label: 'Draft', cls: 'meh', line: 'Only admins can see the form. Families can’t register until you open it.' },
+  draft: { label: 'Draft', cls: 'meh', line: 'Not open yet — families see “Registration hasn’t opened yet.” Only admins can see the form.' },
   open: { label: 'Open', cls: 'good', line: 'Families can register now.' },
   closed: { label: 'Closed', cls: '', line: 'The form is closed — families see a “registration is closed” message.' },
 };
@@ -83,7 +83,6 @@ function renderCampaigns() {
   const fullUrl = new URL(d.url, location.origin).href;
   const primary = c.status === 'draft' ? ['open', 'Open registration'] : c.status === 'open' ? ['closed', 'Close registration'] : ['open', 'Reopen registration'];
   const stripe = !d.stripe ? '<span class="chip bad">Stripe not connected</span>' : d.stripe === 'test' ? '<span class="chip meh" title="Payments are rehearsals — no real money moves">Stripe test mode</span>' : '<span class="chip good">Stripe live</span>';
-  const timing = [c.opens_at ? `Opens ${whenLocal(c.opens_at)}` : '', c.closes_at ? `Closes ${whenLocal(c.closes_at)}` : ''].filter(Boolean).join(' · ');
   const stat = (n, label, cls = '') => `<div class="rstat ${cls}"><b>${n}</b><span>${label}</span></div>`;
   const qOn = d.questions.filter((q) => q.active).length, iOn = d.items.filter((i) => i.active).length, progOn = d.offerings.filter((o) => o.reg_mode !== 'closed').length;
   const waiting = d.waitlist.reduce((a, w) => a + w.players.length, 0);
@@ -97,7 +96,7 @@ function renderCampaigns() {
     <div class="rh-top">
       <div class="rh-title">
         <div class="row" style="gap:10px"><h2 class="rh-name">${esc(c.name)}</h2><span class="chip ${st.cls}">${st.label}</span><span class="chip">${esc(KINDS[c.kind][0])}</span></div>
-        <p class="rh-line">${st.line}${timing ? ` <span class="sub">${esc(timing)}</span>` : ''}</p>
+        <p class="rh-line">${st.line}</p>
         <div class="rh-url"><a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(fullUrl.replace(/^https?:\/\//, ''))}</a><button class="mini" data-act="copyurl" data-url="${esc(fullUrl)}">Copy link</button></div>
       </div>
       <div class="rh-actions">
@@ -130,9 +129,7 @@ function sectionHtml(s) {
         ${dl('Type', `${esc(KINDS[c.kind][0])} <span class="sub">— ${esc(KINDS[c.kind][1])}</span>`)}
         ${dl('Season', esc(String(season)))}
         ${dl('Web address', `<code>/register/${esc(c.slug)}</code>`)}
-        ${dl('Opens', c.opens_at ? esc(whenLocal(c.opens_at)) : '<span class="sub">No date — opens when you click <b>Open registration</b></span>')}
         ${c.kind === 'spring' ? dl('Waiting line', c.line_card ? 'New families save a card when their division is spoken for; you charge it when you let them in' : 'Free — you send a pay link when a spot opens') : ''}
-        ${dl('Closes', c.closes_at ? esc(whenLocal(c.closes_at)) : '<span class="sub">No date — stays open until you close it</span>')}
         ${dl('Intro', c.intro ? `<div class="quote">${esc(c.intro)}</div>` : '<span class="sub">None — the form starts with the parent’s details</span>')}
         ${dl('After registering', c.confirmation ? `<div class="quote">${esc(c.confirmation)}</div>` : '<span class="sub">None — families see the standard “You’re registered” page</span>')}
       </dl></div></div>`;
@@ -407,12 +404,11 @@ function detailsDialog() {
     ${fld('Season', `<select name="season"><option value="">None — standalone (summer team, fall league)</option>${S.st.seasons.map((s) => `<option value="${esc(s.id)}" ${s.id === c.season_id ? 'selected' : ''}>${s.year}</option>`).join('')}</select>`)}
     ${fld('Type', `<select name="kind">${Object.entries(KINDS).map(([k, [l]]) => `<option value="${k}" ${c.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`, 'Spring league turns on returner seats, protection and interest checks.')}
     ${fld('Web address', `<div class="prefix"><span>/register/</span><input type="text" name="slug" value="${esc(c.slug)}" required></div>`, 'Changing it breaks links you’ve already sent.')}
-    <div class="fld2">${fld('Opens', `<input type="datetime-local" name="opens" value="${esc(local(c.opens_at))}">`, 'Optional')}${fld('Closes', `<input type="datetime-local" name="closes" value="${esc(local(c.closes_at))}">`, 'Optional')}</div>
     ${fld('Intro at the top of the form', `<textarea name="intro" rows="3">${esc(c.intro)}</textarea>`)}
     ${fld('Message after a family registers', `<textarea name="conf" rows="3">${esc(c.confirmation)}</textarea>`)}
     ${footer()}</form>`, (f) => {
     const v = (n) => f.elements[n].value, iso = (x) => (x ? new Date(x).toISOString() : null);
-    return act('PATCH', CA(), { name: v('name'), slug: v('slug').trim(), status: v('status'), season_id: v('season') || null, kind: v('kind'), opens_at: iso(v('opens')), closes_at: iso(v('closes')), intro: v('intro'), confirmation: v('conf') }, 'Saved');
+    return act('PATCH', CA(), { name: v('name'), slug: v('slug').trim(), status: v('status'), season_id: v('season') || null, kind: v('kind'), intro: v('intro'), confirmation: v('conf') }, 'Saved');
   });
 }
 

@@ -169,14 +169,13 @@ function linePlace(p: OrderPlayer) {
 const adminTest = (c: Campaign, admin: boolean) => admin && c.status === 'draft' && stripeMode() === 'test'
 
 /**
- * Why the form can't take registrations right now, or null when it can. One opening date for everyone: returners'
- * seats are protected, so new families take the seats nobody is counting on and wait in line for the rest.
+ * Why the form can't take registrations right now, or null when it can. The status alone decides — no dates:
+ * the admin opens and closes it. Returners' seats are protected, so new families take the seats nobody is
+ * counting on and wait in line for the rest.
  */
-export function closedReason(c: Campaign, admin = false, now = new Date().toISOString()): string | null {
+export function closedReason(c: Campaign, admin = false): string | null {
   if (adminTest(c, admin)) return null
   if (c.status !== 'open') return c.status === 'draft' ? 'Registration hasn’t opened yet.' : 'Registration is closed.'
-  if (c.closes_at && now > c.closes_at) return 'Registration is closed.'
-  if (c.opens_at && now < c.opens_at) return `Registration opens ${new Date(c.opens_at).toLocaleDateString('en-US', { timeZone: config.timeZone, weekday: 'long', month: 'long', day: 'numeric' })}.`
   return null
 }
 const isOpen = closedReason
@@ -184,7 +183,8 @@ const isOpen = closedReason
 /** What the public form needs. Never includes other families' data. */
 export function publicCampaign(slugStr: string, preview = false) {
   const c = campaignBySlug(slugStr)
-  if (!c || (c.status === 'draft' && !preview)) throw new UserError('No registration here')
+  if (!c) throw new UserError('No registration here')
+  if (c.status === 'draft' && !preview) throw new UserError('Registration hasn’t opened yet — please check back soon.')
   const s = ageSeason(c)
   return {
     campaign: { name: c.name, slug: c.slug, intro: c.intro, closedReason: isOpen(c, preview), preview: preview && c.status === 'draft', year: s.year, ageCutoff: s.age_cutoff,

@@ -59,7 +59,7 @@ test('setup: 2027 divisions and a campaign built from them', () => {
   assert.equal(C.programsFromSeason(cid, A), 2)
   assert.deepEqual(C.offerings(cid).map((o) => o.name), ['T-Ball', 'Major/Minor'])
   // A draft campaign is invisible to families and refuses checkouts.
-  assert.throws(() => C.publicCampaign('2027-spring'), /No registration here/)
+  assert.throws(() => C.publicCampaign('2027-spring'), /hasn’t opened yet/)
   assert.throws(() => C.quote('2027-spring', { guardian: { firstName: 'P', lastName: 'P', email: 'p@x.co', phone: '5551234567' }, answers: {}, players: [] }), /hasn’t opened/)
   C.saveCampaign(cid, { name: '2027 Spring', status: 'open' }, A)
   assert.deepEqual(pub().items.map((i) => [i.name, i.price_cents, i.required, i.max_qty]), [['Registration fee', 20000, true, 1], ['LFUCG', 500, true, 1], ['Value card', 6000, false, 1]])
