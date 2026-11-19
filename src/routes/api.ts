@@ -15,6 +15,7 @@ import { importRosters } from '../lib/rosters.js'
 import { previewRollover, rollover } from '../lib/rollover.js'
 import { ignoreRegistration, importRegistrationCsv, placeRegistration, processRegistration, storeRegistration } from '../lib/sportsengine.js'
 import { STATUSES } from '../lib/text.js'
+import { liveReady, setStripeMode, stripeConfigured, stripeKeys, stripeMode, webhookSecrets } from '../lib/stripe.js'
 
 export const api = Router()
 const actor = (req: Request) => req.admin?.username ?? 'unknown'
@@ -411,10 +412,18 @@ admin.post('/users/:id/email-link', wrap(async (req) => {
 admin.get('/settings', wrap(() => ({
   league: config.leagueName, baseUrl: config.baseUrl, timeZone: config.timeZone,
   mail: { on: !!config.mail.resendApiKey, from: config.mail.from || '(Resend test sender)', replyTo: config.mail.replyTo },
-  stripe: { on: !!config.stripe.secretKey, mode: config.stripe.secretKey.startsWith('sk_live') || config.stripe.secretKey.startsWith('rk_live') ? 'live' : 'test',
-    webhook: `${config.baseUrl}/webhooks/stripe`, webhookSigned: !!config.stripe.webhookSecret },
+  stripe: { on: stripeConfigured(), mode: stripeMode(), testKey: !!stripeKeys().test, liveKey: !!stripeKeys().live, liveWhy: liveReady(),
+    webhook: `${config.baseUrl}/webhooks/stripe`, webhookSigned: webhookSecrets().length > 0 },
   linkSenders: config.linkSenders,
 })))
+// Test (sandbox) or live payments for every new checkout. Orders already made stay with their own account.
+admin.post('/stripe-mode', wrap((req) => {
+  const { mode } = z.object({ mode: z.enum(['test', 'live']) }).parse(req.body)
+  const was = stripeMode()
+  try { setStripeMode(mode) } catch (e) { throw new L.UserError(e instanceof Error ? e.message : String(e)) }
+  L.audit(actor(req), 'stripe_mode_changed', null, null, { from: was, to: mode })
+  return { mode, message: mode === 'live' ? 'Live payments on — real cards are charged' : 'Test mode on — no real money moves' }
+}))
 admin.get('/audit', wrap((req) => {
   const sid = req.query.season ? String(req.query.season) : null
   return db.prepare(`SELECT a.*, k.name AS kid_name FROM audit a LEFT JOIN kids k ON k.id = a.kid_id

@@ -836,7 +836,7 @@ async function loadSettings() {
   $('setEmail').innerHTML = row('Sending', c.mail.on ? 'On (Resend)' : 'Off — nothing is emailed', c.mail.on)
     + (c.mail.on ? row('From', `<code>${esc(c.mail.from)}</code>`) + row('Replies go to', esc(c.mail.replyTo || 'the From address')) : '')
     + row('What gets emailed', 'Sign-in links · registration receipts and payment reminders · waitlist offers · coach notices · outreach and interest checks') + foot;
-  $('setPay').innerHTML = row('Stripe', c.stripe.on ? (c.stripe.mode === 'live' ? '<b>Live</b> — real cards are charged' : 'Test mode — no real money moves') : 'Off', c.stripe.on)
+  $('setPay').innerHTML = row('Stripe', c.stripe.on ? (c.stripe.mode === 'live' ? '<b>Live</b> — real cards are charged' : 'Test mode — no real money moves') + ` <span class="sub">(${c.stripe.liveKey ? (c.stripe.liveWhy ? esc(c.stripe.liveWhy) : 'live account ready — switch on the Registration tab') : 'no live key yet'})</span>` : 'Off', c.stripe.on)
     + (c.stripe.on ? row('Webhook', `<code>${esc(c.stripe.webhook)}</code>`) + row('Webhook signing', c.stripe.webhookSigned ? 'On' : '<span class="warn-text">No signing secret — payments won’t confirm</span>', c.stripe.webhookSigned) : '')
     + '<p class="note">Payment plans, refunds and what each family owes are under <b>Finance</b> for the season.</p>' + foot;
   $('setSignin').innerHTML = row('How people sign in', 'An emailed link — no passwords. Only people listed under <b>Users</b> can sign in.')

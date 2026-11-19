@@ -8,16 +8,18 @@ import * as O from '../lib/outreach.js'
 import * as P from '../lib/plans.js'
 import { revenue } from '../lib/finance.js'
 import { UserError } from '../lib/league.js'
-import { verifyStripeSignature } from '../lib/stripe.js'
+import { verifyStripeSignature, webhookSecrets } from '../lib/stripe.js'
 
 // Public registration pages, the Stripe webhook, and the campaign builder API.
 
 export const stripeWebhook = Router()
 // Raw body: Stripe signs exactly the bytes it sends.
 stripeWebhook.post('/webhooks/stripe', express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-  if (!config.stripe.webhookSecret) return res.status(503).json({ error: 'webhook not configured' })
+  // Test and live endpoints both send here, each signed with its own secret.
+  const secrets = webhookSecrets()
+  if (!secrets.length) return res.status(503).json({ error: 'webhook not configured' })
   const raw: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-  if (!verifyStripeSignature(raw, req.get('stripe-signature'), config.stripe.webhookSecret)) return res.status(400).json({ error: 'bad signature' })
+  if (!secrets.some((s) => verifyStripeSignature(raw, req.get('stripe-signature'), s))) return res.status(400).json({ error: 'bad signature' })
   try {
     const ev = JSON.parse(raw.toString('utf8'))
     const note = C.handleStripeEvent(ev)

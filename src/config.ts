@@ -36,6 +36,9 @@ export const config = {
   stripe: {
     secretKey: env.STRIPE_SECRET_KEY || '',
     webhookSecret: env.STRIPE_WEBHOOK_SECRET || '',
+    // The live account, kept beside the test one; an admin switches between them (Registration → Payments).
+    liveSecretKey: env.STRIPE_LIVE_SECRET_KEY || '',
+    liveWebhookSecret: env.STRIPE_LIVE_WEBHOOK_SECRET || '',
     // Only for local testing against a fake; production always talks to Stripe.
     apiBase: (env.STRIPE_API_BASE || 'https://api.stripe.com').replace(/\/$/, ''),
   },

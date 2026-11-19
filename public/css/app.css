@@ -1166,3 +1166,4 @@ html:has(main.reg){scroll-padding:28px 0 96px}
 .linemsg{display:block;margin:6px 0;font-style:italic}
 p.linemsg{margin:0 0 8px}
 blockquote.linemsg{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--line);color:var(--muted, inherit)}
+button.chip{background:none;cursor:pointer;font-family:inherit}

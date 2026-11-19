@@ -3,7 +3,7 @@ import { config } from '../config.js'
 import { db } from '../db.js'
 import { audit, changed, UserError } from './league.js'
 import { mailConfigured, sendBatch, type Mail } from './mailer.js'
-import { chargeSavedCard, createCheckout, getPaymentIntent, getSetupIntent, stripeConfigured, type PaymentIntent } from './stripe.js'
+import { chargeSavedCard, createCheckout, getPaymentIntent, getSetupIntent, modeOf, stripeConfigured, type PaymentIntent } from './stripe.js'
 import { uid } from './text.js'
 
 // Payment plans: the league's own interest-free installments. The family pays the
@@ -112,14 +112,18 @@ export function firstPaymentIn(orderId: string, paymentId: string | null) {
 
 /** Keep the card the family just paid with, so later installments can be charged to it. */
 export async function saveCard(orderId: string, paymentIntentId: string | null) {
-  if (!paymentIntentId || !stripeConfigured()) return
-  keepCard(orderId, await getPaymentIntent(paymentIntentId))
+  const mode = orderMode(orderId)
+  if (!paymentIntentId || !stripeConfigured(mode)) return
+  keepCard(orderId, await getPaymentIntent(paymentIntentId, mode))
 }
 /** An early sign-up saved a card without paying anything yet. */
 export async function saveSetupCard(orderId: string, setupIntentId: string | null) {
-  if (!setupIntentId || !stripeConfigured()) return
-  keepCard(orderId, await getSetupIntent(setupIntentId))
+  const mode = orderMode(orderId)
+  if (!setupIntentId || !stripeConfigured(mode)) return
+  keepCard(orderId, await getSetupIntent(setupIntentId, mode))
 }
+/** The Stripe account (test or live) an order was made in — its customer and card live there. */
+const orderMode = (orderId: string) => modeOf((db.prepare('SELECT stripe_mode FROM orders WHERE id = ?').get(orderId) as { stripe_mode: string | null } | undefined) ?? {})
 function keepCard(orderId: string, pi: { customer: string | null; payment_method: PaymentIntent['payment_method'] }) {
   const pm = typeof pi.payment_method === 'string' ? { id: pi.payment_method } : pi.payment_method
   if (!pi.customer || !pm?.id) return
@@ -151,7 +155,7 @@ export async function chargeInstallment(id: string, actor: string, auto = false)
   let pi: PaymentIntent | null = null, error = ''
   try {
     pi = await chargeSavedCard({
-      customer: o.stripe_customer_id, paymentMethod: o.stripe_pm_id, cents: i.amount_cents,
+      customer: o.stripe_customer_id, paymentMethod: o.stripe_pm_id, cents: i.amount_cents, mode: orderMode(o.id),
       description: `${c.name} registration — payment ${i.seq} of ${n} (${playerNames(o.id).join(', ')})`,
       metadata: { order_id: o.id, installment_id: i.id }, idempotencyKey: `inst-${i.id}-${attempt}`,
     })
@@ -238,7 +242,7 @@ export async function startBalanceCheckout(slugStr: string, token: string): Prom
   const done = `${config.baseUrl}/register/${c.slug}/done?order=${o.id}`
   const s = await createCheckout({
     lines: pay.map((i) => ({ name: `Payment ${i.seq} of ${n} — ${c.name} registration`, description: `Due ${niceDate(i.due_date)} · ${playerNames(o.id).join(', ')}`, unitCents: i.amount_cents, qty: 1 })),
-    email: g.email ?? '', customer: o.stripe_customer_id, saveCard: true, orderId: o.id, idempotencyKey: `balance-${o.id}-${Date.now()}`,
+    email: g.email ?? '', customer: o.stripe_customer_id, saveCard: true, orderId: o.id, mode: orderMode(o.id), idempotencyKey: `balance-${o.id}-${Date.now()}`,
     extraMetadata: { installment_ids: pay.map((i) => i.id).join(',') },
     successUrl: `${done}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: done,
     description: `${c.name} registration — ${pay.length === 1 ? `payment ${pay[0]!.seq}` : `payments ${pay.map((i) => i.seq).join(', ')}`} of ${n}`,
@@ -363,7 +367,7 @@ export async function remindFamily(orderId: string, actor: string): Promise<{ em
 let running = false
 /** Charge what's due and send the "coming up" emails. Runs every few minutes; safe to call any time. */
 export async function runPlans(now = new Date()): Promise<{ charged: number; failed: number; reminded: number }> {
-  if (running || !stripeConfigured()) return { charged: 0, failed: 0, reminded: 0 }
+  if (running || !(stripeConfigured('test') || stripeConfigured('live'))) return { charged: 0, failed: 0, reminded: 0 }
   running = true
   const out = { charged: 0, failed: 0, reminded: 0 }
   try {

@@ -82,7 +82,8 @@ function renderCampaigns() {
   const d = CS.data, c = d.campaign, t = d.totals, st = STATUS[c.status];
   const fullUrl = new URL(d.url, location.origin).href;
   const primary = c.status === 'draft' ? ['open', 'Open registration'] : c.status === 'open' ? ['closed', 'Close registration'] : ['open', 'Reopen registration'];
-  const stripe = !d.stripe ? '<span class="chip bad">Stripe not connected</span>' : d.stripe === 'test' ? '<span class="chip meh" title="Payments are rehearsals — no real money moves">Stripe test mode</span>' : '<span class="chip good">Stripe live</span>';
+  const stripe = !d.stripe ? '<span class="chip bad">Stripe not connected</span>'
+    : `<button class="chip ${d.stripe === 'live' ? 'good' : 'meh'}" data-paymode title="${d.stripe === 'live' ? 'Real cards are charged' : 'Payments are rehearsals — no real money moves'}">${d.stripe === 'live' ? 'Stripe live' : 'Stripe test mode'} ▾</button>`;
   const stat = (n, label, cls = '') => `<div class="rstat ${cls}"><b>${n}</b><span>${label}</span></div>`;
   const qOn = d.questions.filter((q) => q.active).length, iOn = d.items.filter((i) => i.active).length, progOn = d.offerings.filter((o) => o.reg_mode !== 'closed').length;
   const waiting = d.waitlist.reduce((a, w) => a + w.players.length, 0);
@@ -231,6 +232,30 @@ function waitlistPanel(d) {
       ${w.players.length ? `<div class="scroll"><table class="kt"><tr><th class="num">#</th><th>Player</th><th>Family</th><th>Joined</th><th class="num">Owes</th><th>Status</th><th></th></tr>
       ${w.players.map((p) => row(p, w)).join('')}</table></div>` : ''}`).join('') : '<p class="lead">Nobody is waiting.</p>'}
   </div></div>`;
+}
+
+/* Test (sandbox) or live payments, for every new checkout. Orders already made keep their own account. */
+function payModeDialog() {
+  const d = CS.data, live = d.payments.mode === 'live';
+  if (live) return openDialog(`<div class="dlg"><h2>Switch back to test mode?</h2>
+    <p>New checkouts go to the Stripe sandbox: <b>families who register while it’s on pay nothing real</b>, and their registrations count anyway. Use it only before registration opens, or to rehearse.</p>
+    <p class="note">Live orders already made stay live — their saved cards, payment plans and line charges keep using the live account.</p>
+    <div class="row"><button class="btn" id="pmGo">Switch to test mode</button><span class="spacer"></span><button class="btn primary" data-close>Stay live</button></div></div>`, (dl) => {
+    dl.querySelector('#pmGo').onclick = async () => { if (await act('POST', '/api/admin/stripe-mode', { mode: 'test' })) { dl.close(); loadCampaigns(); } };
+  });
+  openDialog(`<form class="dlg" id="pmF"><h2>Go live with payments?</h2>
+    <p>Every new checkout, saved card and pay link will use the league’s <b>live Stripe account</b> — real cards are charged and the money goes to the league’s bank account.</p>
+    <ul class="note"><li>Orders made in test mode stay test; their test cards are never charged.</li>
+      <li>${d.campaign.status === 'open' ? '<b>Registration is open</b> — the next family to check out pays for real.' : 'Registration stays <b>' + esc(d.campaign.status) + '</b> until you open it. While live, admins can’t make practice checkouts on a draft.'}</li>
+      <li>Applies to every registration and payment plan, not just this one.</li></ul>
+    ${d.payments.liveWhy ? `<div class="alertbox">${esc(d.payments.liveWhy)}.</div>` : fld('Type LIVE to confirm', '<input type="text" name="confirm" autocomplete="off" required>')}
+    <div class="row"><button class="btn primary" type="submit" ${d.payments.liveWhy ? 'disabled' : ''}>Go live</button><span class="spacer"></span><button class="btn" data-close>Cancel</button></div></form>`, (dl) => {
+    dl.querySelector('#pmF').onsubmit = async (e) => {
+      e.preventDefault();
+      if (e.target.elements.confirm.value.trim().toUpperCase() !== 'LIVE') return toast('Type LIVE to confirm');
+      if (await act('POST', '/api/admin/stripe-mode', { mode: 'live' })) { dl.close(); loadCampaigns(); }
+    };
+  });
 }
 
 /* What families in line read on the form and their confirmation page. */
@@ -606,6 +631,7 @@ $('campEditor').addEventListener('click', async (e) => {
   if (t.dataset.laccept) return acceptLineDialog(t);
   if (t.matches('[data-churn]')) return churnDialog();
   if (t.matches('[data-linemsg]')) return lineMessageDialog();
+  if (t.matches('[data-paymode]')) return payModeDialog();
   if (t.dataset.offer) return offerDialog(t);
   if (t.dataset.copy) { navigator.clipboard?.writeText(t.dataset.copy).then(() => toast('Pay link copied')); return; }
   if (t.dataset.remove) {

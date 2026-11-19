@@ -8,7 +8,7 @@ import { addContact } from './contacts.js'
 import { notifyCoaches } from './coaches.js'
 import { balancePaid, createPlan, firstPaymentIn, installmentsFor, payDays, payLink, planFor, saveCard, saveSetupCard, today } from './plans.js'
 import { mailConfigured, sendBatch } from './mailer.js'
-import { chargeSavedCard, createCheckout, createCustomer, createSetupCheckout, getCheckout, stripeConfigured, stripeMode, type LineItem } from './stripe.js'
+import { chargeSavedCard, createCheckout, createCustomer, createSetupCheckout, getCheckout, liveReady, modeOf, sessionMode, stripeConfigured, stripeKeys, stripeMode, type LineItem } from './stripe.js'
 import { leagueAge, nameKey, normDate, uid } from './text.js'
 import { randomBytes } from 'node:crypto'
 
@@ -663,12 +663,14 @@ export function quote(slugStr: string, inp: CheckoutInput, admin = false): Quote
 export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl: string, admin = false): Promise<{ orderId: string; url: string }> {
   const q = quote(slugStr, inp, admin)
   const anyEarly = q.players.some((p) => p.early)
-  if ((q.total > 0 || anyEarly) && !stripeConfigured()) throw new UserError('Online payment isn’t set up yet — please try again later')
+  // One account for the whole order, even if an admin switches test/live mid-checkout.
+  const mode = stripeMode()
+  if ((q.total > 0 || anyEarly) && !stripeConfigured(mode)) throw new UserError('Online payment isn’t set up yet — please try again later')
   const orderId = uid() + uid()
   const allWaitlisted = q.players.every((p) => p.waitlisted)
   db.transaction(() => {
     db.prepare(`INSERT INTO orders (id, campaign_id, status, guardian, answers, total_cents, stripe_mode) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(orderId, q.campaign.id, q.total > 0 || anyEarly ? 'pending' : allWaitlisted ? 'waitlisted' : 'pending', JSON.stringify(q.guardian), JSON.stringify(q.answers), q.total, q.total > 0 || anyEarly ? stripeMode() : null)
+      .run(orderId, q.campaign.id, q.total > 0 || anyEarly ? 'pending' : allWaitlisted ? 'waitlisted' : 'pending', JSON.stringify(q.guardian), JSON.stringify(q.answers), q.total, q.total > 0 || anyEarly ? mode : null)
     for (const p of q.players) {
       const pid = uid()
       db.prepare(`INSERT INTO order_players (id, order_id, first_name, last_name, birthdate, gender, offering_id, status, answers, prior_match, held_seat, early) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -687,10 +689,10 @@ export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl
   const everyone = q.players.map((p) => `${p.input.firstName.trim()} ${p.input.lastName.trim()}`).join(', ')
   if (q.total === 0) {
     // Only players joining the line (and maybe free ones): save a card, charge nothing today.
-    const cust = await createCustomer({ email: q.guardian.email.trim(), name: `${q.guardian.firstName} ${q.guardian.lastName}`.trim(), orderId })
+    const cust = await createCustomer({ email: q.guardian.email.trim(), name: `${q.guardian.firstName} ${q.guardian.lastName}`.trim(), orderId, mode })
     db.prepare('UPDATE orders SET stripe_customer_id = ? WHERE id = ?').run(cust.id, orderId)
     const session = await createSetupCheckout({
-      customer: cust.id, orderId, idempotencyKey: `order-${orderId}`,
+      customer: cust.id, orderId, idempotencyKey: `order-${orderId}`, mode,
       successUrl: `${done}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: `${baseUrl}/register/${q.campaign.slug}?cancelled=${orderId}`,
       description: `${q.campaign.name} waiting line — ${everyone}. Charged only if the league lets them in.`,
     })
@@ -707,7 +709,7 @@ export async function startCheckout(slugStr: string, inp: CheckoutInput, baseUrl
     description: `${names}. Then ${q.plan.slice(1).map((x) => `$${(x.cents / 100).toFixed(2)} on ${x.due}`).join(', ')} — charged to this card.`, unitCents: q.plan[0]!.cents, qty: 1 }] : null
   const session = await createCheckout({
     // A plan, or a player joining the line in the same order, keeps the card for later charges.
-    lines: planLines ?? lines, saveCard: !!q.plan || anyEarly, email: q.guardian.email.trim(), orderId, idempotencyKey: `order-${orderId}`,
+    lines: planLines ?? lines, mode, saveCard: !!q.plan || anyEarly, email: q.guardian.email.trim(), orderId, idempotencyKey: `order-${orderId}`,
     successUrl: `${done}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: `${baseUrl}/register/${q.campaign.slug}?cancelled=${orderId}`,
     description: `${q.campaign.name} registration — ${q.players.map((p) => `${p.input.firstName} ${p.input.lastName}`).join(', ')}`,
   })
@@ -890,6 +892,8 @@ export async function payOffer(slugStr: string, token: string, baseUrl: string):
   if (p.status !== 'offered') throw new UserError(`This offer for ${p.first_name} is no longer available. Please contact the league if you have questions.`)
   if (offerExpired(p)) throw new UserError(`This offer for ${p.first_name} expired on ${longDate(p.offer_expires_at!)}. Please contact the league — ${p.first_name} may still be on the waitlist.`)
   const g = J<CheckoutInput['guardian']>(o.guardian, {} as CheckoutInput['guardian'])
+  // A spot paid for now goes to the account that's switched on (a free waitlist order had none yet).
+  db.prepare('UPDATE orders SET stripe_mode = COALESCE(stripe_mode, ?) WHERE id = ?').run(stripeMode(), o.id)
   const session = await createCheckout({
     lines: playerItems(p.id).map((l) => ({ name: `${l.name} — ${p.first_name} ${p.last_name}`, unitCents: l.unit_cents, qty: l.qty })),
     email: g.email, orderId: o.id, idempotencyKey: `offer-${p.id}-${Date.now()}`, extraMetadata: { order_player_id: p.id },
@@ -962,7 +966,7 @@ export async function acceptFromLine(orderPlayerId: string, actor: string): Prom
       let error = ''
       try {
         const pi = await chargeSavedCard({
-          customer: o.stripe_customer_id, paymentMethod: o.stripe_pm_id, cents: amt, receiptEmail: g.email,
+          customer: o.stripe_customer_id, paymentMethod: o.stripe_pm_id, cents: amt, receiptEmail: g.email, mode: modeOf(o),
           description: `${c.name} registration — ${who} (${off.name})`, metadata: { order_id: o.id, order_player_id: p.id },
           idempotencyKey: `line-${p.id}-${p.early_attempts + 1}`,
         })
@@ -1066,7 +1070,7 @@ export function handleStripeEvent(ev: { type: string; data: { object: Record<str
 export async function confirmFromReturn(orderId: string, sessionId: string | null) {
   const o = order(orderId)
   if (!o) throw new UserError('Unknown registration')
-  if (sessionId && stripeConfigured()) {
+  if (sessionId && stripeConfigured(sessionMode(sessionId))) {
     try {
       const s = await getCheckout(sessionId)
       if (s.mode === 'setup' && s.status === 'complete' && s.metadata?.order_id === o.id) {
@@ -1124,6 +1128,7 @@ export function adminCampaign(id: string) {
   return {
     churn: churnTable(c), defaultLineMessage: DEFAULT_LINE_MESSAGE,
     campaign: c, waitlist, mail: mailConfigured(), offerHours: OFFER_HOURS, url: `${config.baseUrl}/register/${c.slug}`, stripe: stripeConfigured() ? stripeMode() : null, webhook: !!config.stripe.webhookSecret,
+    payments: { mode: stripeMode(), testKey: !!stripeKeys().test, liveWhy: liveReady() },
     offerings: offs.map((o) => {
       const mine = ps.filter((p) => p.offering_id === o.id), reg = mine.filter((p) => p.status === 'registered')
       return { ...o, ...availability(o), registered: reg.length, new_registered: reg.filter((p) => !p.held_seat).length, returning_registered: reg.filter((p) => p.held_seat).length,
