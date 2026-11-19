@@ -13,7 +13,8 @@ import { STATUSES, uid, type Status } from './text.js'
 // kids, with a personal link that opens the registration form already filled
 // in. Sending again later only reaches families who still haven't registered.
 
-export interface Filter { divisionIds: string[]; statuses: Status[] }
+/** A group (divisions × statuses), or — when kidIds is set — just those players' parents. */
+export interface Filter { divisionIds: string[]; statuses: Status[]; kidIds?: string[] }
 export type Kind = 'register' | 'interest'
 export interface OutreachInput extends Filter { seasonId: string; campaignId: string; subject: string; body: string; kind?: Kind }
 
@@ -45,6 +46,18 @@ One click is all it takes — registration comes later. Changed your mind? Just 
 Thank you,
 {league}`
 
+// The follow-up: same thread, only the kids still unanswered, same answer buttons.
+export const REMINDER_BODY = `Hi {parent_first},
+
+Just following up on our note about the {season} season — we haven't heard back yet about {players}.
+
+{answer_buttons}
+
+One click is all it takes. If you've already told your coach, please click anyway so we have it on record.
+
+Thank you,
+{league}`
+
 const FIELDS = ['parent_first', 'parent', 'players', 'player_details', 'link', 'answer_buttons', 'season', 'league']
 export type Intent = 'yes' | 'no' | 'unsure'
 export const INTENT_LABEL: Record<Intent, string> = { yes: 'Yes, playing', no: 'Not this year', unsure: 'Not sure yet' }
@@ -55,22 +68,33 @@ export interface Family { email: string; name: string; kids: AudienceKid[] }
 
 function filterOf(f: Partial<Filter>): Filter {
   const statuses = (f.statuses?.length ? f.statuses : ['Expected', 'Need to contact']).filter((s) => (STATUSES as readonly string[]).includes(s)) as Status[]
-  return { divisionIds: f.divisionIds ?? [], statuses }
+  const kidIds = [...new Set(f.kidIds ?? [])].slice(0, 20)
+  return kidIds.length ? { divisionIds: [], statuses, kidIds } : { divisionIds: f.divisionIds ?? [], statuses }
 }
 
 /** Who a filter reaches: families by email, plus the kids it matches who have no email on file. */
-export function audience(seasonId: string, f: Partial<Filter>) {
+export function audience(seasonId: string, f: Partial<Filter> & { kind?: Kind }) {
   mustSeason(seasonId)
-  const { divisionIds, statuses } = filterOf(f)
-  const rows = db.prepare(`SELECT k.id, k.name, d.name AS division, t.name AS team, e.status, d.sort
-    FROM enrollments e JOIN kids k ON k.id = e.kid_id JOIN divisions d ON d.id = e.division_id LEFT JOIN teams t ON t.id = e.team_id
-    WHERE e.season_id = ? AND e.returner = 1 AND e.status IN (${statuses.map(() => '?').join(',')})
-      ${divisionIds.length ? `AND e.division_id IN (${divisionIds.map(() => '?').join(',')})` : ''}
-    ORDER BY d.sort, t.name, k.name`).all(seasonId, ...statuses, ...divisionIds) as (AudienceKid & { sort: number })[]
+  // One interest thread per player per season: anyone already asked gets reminders, never a second check.
+  const asked = f.kind === 'interest' ? askedKidIds(seasonId) : new Set<string>()
+  let alreadyAsked = 0
+  const { divisionIds, statuses, kidIds } = filterOf(f)
+  // Picked players: anyone this season who hasn't registered yet (new or returning, any status).
+  const rows = (kidIds?.length
+    ? db.prepare(`SELECT k.id, k.name, d.name AS division, t.name AS team, e.status, d.sort
+      FROM enrollments e JOIN kids k ON k.id = e.kid_id JOIN divisions d ON d.id = e.division_id LEFT JOIN teams t ON t.id = e.team_id
+      WHERE e.season_id = ? AND e.status <> 'Registered' AND e.kid_id IN (${kidIds.map(() => '?').join(',')})
+      ORDER BY d.sort, t.name, k.name`).all(seasonId, ...kidIds)
+    : db.prepare(`SELECT k.id, k.name, d.name AS division, t.name AS team, e.status, d.sort
+      FROM enrollments e JOIN kids k ON k.id = e.kid_id JOIN divisions d ON d.id = e.division_id LEFT JOIN teams t ON t.id = e.team_id
+      WHERE e.season_id = ? AND e.returner = 1 AND e.status IN (${statuses.map(() => '?').join(',')})
+        ${divisionIds.length ? `AND e.division_id IN (${divisionIds.map(() => '?').join(',')})` : ''}
+      ORDER BY d.sort, t.name, k.name`).all(seasonId, ...statuses, ...divisionIds)) as (AudienceKid & { sort: number })[]
   const contacts = db.prepare(`SELECT name, email FROM contacts WHERE kid_id = ? AND email <> '' ORDER BY created_at, rowid`)
   const fams = new Map<string, Family>()
   const missing: AudienceKid[] = []
   for (const r of rows) {
+    if (asked.has(r.id)) { alreadyAsked++; continue }
     const kid: AudienceKid = { id: r.id, name: r.name, division: r.division, team: r.team, status: r.status }
     const cs = contacts.all(r.id) as { name: string; email: string }[]
     if (!cs.length) { missing.push(kid); continue }
@@ -81,7 +105,7 @@ export function audience(seasonId: string, f: Partial<Filter>) {
       fams.set(c.email, fam)
     }
   }
-  return { families: [...fams.values()], missing, kids: rows.length }
+  return { families: [...fams.values()], missing, kids: rows.length - alreadyAsked, alreadyAsked }
 }
 
 const firstName = (n: string) => n.trim().split(/\s+/)[0] ?? ''
@@ -138,7 +162,8 @@ export function preview(inp: OutreachInput) {
   const c = inp.campaignId ? campaign(inp.campaignId) : undefined
   const sample = a.families[0] && c ? compose(inp.subject, inp.body, a.families[0], linkFor(c.slug, 'personal-link'), s.year) : null
   return {
-    families: a.families.length, kids: a.kids, reached: a.kids - a.missing.length, missing: a.missing,
+    families: a.families.length, kids: a.kids, reached: a.kids - a.missing.length, missing: a.missing, alreadyAsked: a.alreadyAsked,
+    to: filterOf(inp).kidIds ? a.families.map((f) => ({ email: f.email, name: f.name })) : undefined,
     sample, mail: mailConfigured() ? { from: config.mail.from } : null,
   }
 }
@@ -149,7 +174,8 @@ const token = () => randomBytes(18).toString('base64url')
 export function createOutreach(inp: OutreachInput, actor: string): string {
   check(inp)
   const a = audience(inp.seasonId, inp)
-  if (!a.families.length) throw new UserError(a.kids ? 'None of these families have an email on file yet' : 'No returning players match — everyone may already be registered')
+  if (!a.families.length && a.alreadyAsked && !a.kids) throw new UserError(`${a.alreadyAsked === 1 ? 'This player was' : `All ${a.alreadyAsked} players were`} already asked this season — send a reminder from the Interest check tab instead`)
+  if (!a.families.length) throw new UserError(a.kids ? 'None of these families have an email on file yet' : filterOf(inp).kidIds ? 'That player is already registered — nothing to send' : 'No returning players match — everyone may already be registered')
   const id = uid()
   db.transaction(() => {
     db.prepare('INSERT INTO outreach (id, season_id, campaign_id, subject, body, filter, created_by, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -284,7 +310,7 @@ export function invite(slugStr: string, tok: string) {
     if (!k || db.prepare(`SELECT 1 FROM enrollments WHERE season_id = ? AND kid_id = ? AND status = 'Registered'`).get(o.season_id, kidId)) return []
     const [first = '', ...rest] = k.name.split(/\s+/)
     const returning = k.birthdate && returningMatches(c, first, rest.join(' '), k.birthdate).some((x) => x.id === k.id) ? k.id : undefined
-    return [{ firstName: first, lastName: rest.join(' '), birthdate: k.birthdate ?? '', returning }]
+    return [{ firstName: first, lastName: rest.join(' '), birthdate: k.birthdate ?? '', gender: k.gender || '', returning }]
   })
   return { guardian: { firstName: gFirst, lastName: gRest.join(' '), email: m.email }, players }
 }
@@ -349,4 +375,125 @@ export function applyIntent(seasonId: string, kidId: string, intent: Intent, act
   if (to && !e.status_locked) updateEnrollment(e.id, { status: to }, actor)
   audit(actor, 'interest_answered', seasonId, kidId, { answer: intent, status: to ?? e.status })
   return true
+}
+
+/* ---------- interest check, player by player: one thread each, tracked, with reminders ---------- */
+interface ThreadMsg extends Msg { reminders: number; reminded_at: string | null; o_created: string; o_subject: string; o_body: string; campaign_id: string }
+const iso = (x: string | null | undefined) => (!x ? null : x.includes('T') ? x : `${x.replace(' ', 'T')}Z`)
+const threadMsgs = (seasonId: string) => db.prepare(`SELECT m.*, o.created_at AS o_created, o.subject AS o_subject, o.body AS o_body, o.campaign_id
+  FROM outreach_messages m JOIN outreach o ON o.id = m.outreach_id WHERE o.season_id = ? AND o.kind = 'interest' ORDER BY o.created_at, m.rowid`).all(seasonId) as ThreadMsg[]
+/** Kids already in an interest-check message this season (sent, exported, or waiting to go). */
+export function askedKidIds(seasonId: string) {
+  return new Set(threadMsgs(seasonId).flatMap((m) => JSON.parse(m.kid_ids) as string[]))
+}
+/** When a message reached the family: sent, or the day it was exported to go out another way. */
+const askedAt = (m: ThreadMsg) => (m.status === 'sent' ? iso(m.sent_at) : m.status === 'exported' ? iso(m.o_created) : null)
+const lastTouch = (m: ThreadMsg) => [askedAt(m), iso(m.reminded_at)].filter(Boolean).sort().at(-1) ?? null
+const OUT_STATUSES = ['Registered', 'Not returning', 'Withdrawn']
+
+export type TrackState = 'registered' | 'answered' | 'waiting' | 'undelivered' | 'not_asked' | 'no_email' | 'out'
+
+/** Every returner (and anyone else who got an interest check) with where their answer stands. */
+export function interestTracker(seasonId: string) {
+  const s = mustSeason(seasonId)
+  const msgs = threadMsgs(seasonId)
+  const byKid = new Map<string, ThreadMsg[]>()
+  for (const m of msgs) for (const k of JSON.parse(m.kid_ids) as string[]) byKid.set(k, [...(byKid.get(k) ?? []), m])
+  const rows = db.prepare(`SELECT k.id, k.name, e.status, e.intent, e.intent_at, e.intent_by, e.returner, d.name AS division, d.id AS division_id, d.sort, t.name AS team
+    FROM enrollments e JOIN kids k ON k.id = e.kid_id LEFT JOIN divisions d ON d.id = e.division_id LEFT JOIN teams t ON t.id = e.team_id
+    WHERE e.season_id = ? ORDER BY d.sort, t.name, k.name`).all(seasonId) as { id: string; name: string; status: Status; intent: Intent | null; intent_at: string | null; intent_by: string | null; returner: number; division: string | null; division_id: string | null; sort: number; team: string | null }[]
+  const emails = db.prepare(`SELECT name, email FROM contacts WHERE kid_id = ? AND email <> '' ORDER BY created_at, rowid`)
+  const players = rows.filter((r) => r.returner || byKid.has(r.id)).map((r) => {
+    const ms = byKid.get(r.id) ?? []
+    const reached = ms.filter((m) => askedAt(m))
+    const family = r.intent_by === 'family' && r.intent ? r.intent : null
+    const parents = ms.length ? ms.map((m) => ({ name: m.name, email: m.email })) : (emails.all(r.id) as { name: string; email: string }[])
+    const state: TrackState = r.status === 'Registered' ? 'registered' : family ? 'answered' : reached.length ? 'waiting'
+      : ms.length ? 'undelivered' : OUT_STATUSES.includes(r.status) ? 'out' : parents.length ? 'not_asked' : 'no_email'
+    return {
+      id: r.id, name: r.name, division: r.division, divisionId: r.division_id, team: r.team, status: r.status, returner: !!r.returner, state,
+      parents, answer: family, answeredAt: family ? iso(r.intent_at) : null,
+      // What the league or a coach passed on, when the family hasn't answered themselves.
+      relayed: !family && r.intent ? { intent: r.intent, by: r.intent_by } : null,
+      askedAt: reached.map(askedAt).sort()[0] ?? null,
+      reminders: Math.max(0, ...ms.map((m) => m.reminders)), remindedAt: ms.map((m) => iso(m.reminded_at)).filter(Boolean).sort().at(-1) ?? null,
+      lastTouch: ms.map(lastTouch).filter(Boolean).sort().at(-1) ?? null,
+      opened: ms.map((m) => iso(m.clicked_at)).filter(Boolean).sort()[0] ?? null,
+      delivery: ms.some((m) => m.status === 'failed') && !reached.length ? 'failed' : ms.some((m) => m.status === 'queued') && !reached.length ? 'queued' : null,
+    }
+  })
+  const count = (st: TrackState) => players.filter((p) => p.state === st).length
+  return {
+    season: { id: s.id, year: s.year }, players, mail: mailConfigured(),
+    summary: { total: players.length, not_asked: count('not_asked'), no_email: count('no_email'), undelivered: count('undelivered'), waiting: count('waiting'),
+      answered: count('answered'), registered: count('registered'), out: count('out'),
+      yes: players.filter((p) => p.state === 'answered' && p.answer === 'yes').length, no: players.filter((p) => p.state === 'answered' && p.answer === 'no').length,
+      unsure: players.filter((p) => p.state === 'answered' && p.answer === 'unsure').length },
+  }
+}
+
+/** Families to follow up: reached at least `days` ago (counting the last reminder) with a kid still unanswered. */
+function reminderTargets(seasonId: string, days: number) {
+  const cutoff = new Date(Date.now() - days * 864e5).toISOString()
+  const pendingOf = db.prepare(`SELECT k.id, k.name, d.name AS division, t.name AS team, e.status, e.intent, e.intent_by FROM enrollments e JOIN kids k ON k.id = e.kid_id
+    LEFT JOIN divisions d ON d.id = e.division_id LEFT JOIN teams t ON t.id = e.team_id WHERE e.season_id = ? AND e.kid_id = ?`)
+  const out: { m: ThreadMsg; all: Family; pending: Family }[] = []
+  for (const m of threadMsgs(seasonId)) {
+    const last = lastTouch(m)
+    if (!last || last > cutoff) continue
+    const kids = (JSON.parse(m.kid_ids) as string[]).map((id) => pendingOf.get(seasonId, id) as (AudienceKid & { intent: string | null; intent_by: string | null }) | undefined).filter(Boolean) as (AudienceKid & { intent: string | null; intent_by: string | null })[]
+    const pending = kids.filter((k) => !OUT_STATUSES.includes(k.status) && !(k.intent_by === 'family' && k.intent))
+    if (!pending.length) continue
+    const strip = (k: AudienceKid) => ({ id: k.id, name: k.name, division: k.division, team: k.team, status: k.status })
+    out.push({ m, all: { email: m.email, name: m.name, kids: kids.map(strip) }, pending: { email: m.email, name: m.name, kids: pending.map(strip) } })
+  }
+  return out
+}
+
+function reminderMail(t: ReturnType<typeof reminderTargets>[number], body: string, year: number) {
+  const c = campaign(t.m.campaign_id)
+  const link = c ? linkFor(c.slug, t.m.token) : ''
+  // Same subject as the first email, so it lands in the family's existing thread.
+  const first = compose(t.m.o_subject, t.m.o_body, t.all, link, year, t.m.token).subject
+  const mail = compose('x', body, t.pending, link, year, t.m.token)
+  return { ...mail, subject: /^re:/i.test(first) ? first : `Re: ${first}` }
+}
+
+function checkReminderBody(body: string) {
+  if (!body.includes('{answer_buttons}')) throw new UserError('Put {answer_buttons} in the reminder — it’s where each family clicks their answer')
+  const unknown = [...body.matchAll(/\{(\w+)\}/g)].map((m) => m[1]!).filter((k) => !FIELDS.includes(k))
+  if (unknown.length) throw new UserError(`Unknown field {${unknown[0]}}`)
+}
+
+export function reminderPreview(seasonId: string, days: number, body: string) {
+  const s = mustSeason(seasonId), ts = reminderTargets(seasonId, days)
+  return { families: ts.length, kids: new Set(ts.flatMap((t) => t.pending.kids.map((k) => k.id))).size,
+    sample: ts[0] ? reminderMail(ts[0], body || REMINDER_BODY, s.year) : null, mail: mailConfigured() ? { from: config.mail.from } : null }
+}
+
+/** Send (or export) the follow-up to every family still unanswered after `days`. Each counts on its message: reminders + 1. */
+export async function sendReminders(seasonId: string, p: { days: number; body: string; mode: 'send' | 'export' }, actor: string) {
+  const s = mustSeason(seasonId)
+  checkReminderBody(p.body)
+  const ts = reminderTargets(seasonId, p.days)
+  if (!ts.length) throw new UserError(`Nobody to remind — every family reached ${p.days}+ days ago has answered`)
+  if (p.mode === 'send' && !mailConfigured()) throw new UserError('Email isn’t set up yet — export the reminder list instead')
+  const mark = db.prepare(`UPDATE outreach_messages SET reminders = reminders + 1, reminded_at = datetime('now') WHERE id = ?`)
+  const note = (t: (typeof ts)[number], how: string) => { mark.run(t.m.id); for (const k of t.pending.kids) audit(actor, 'interest_reminded', seasonId, k.id, { to: t.m.email, how, n: t.m.reminders + 1 }) }
+  if (p.mode === 'export') {
+    const rows = [['Email', 'Parent', 'Players', 'Subject', 'Message', 'Answer link', 'Reminder #']]
+    db.transaction(() => { for (const t of ts) { const mail = reminderMail(t, p.body, s.year); rows.push([t.m.email, t.m.name, t.pending.kids.map((k) => k.name).join('; '), mail.subject, mail.text, `${config.baseUrl}/interest/${t.m.token}`, String(t.m.reminders + 1)]); note(t, 'exported') } })()
+    audit(actor, 'interest_reminders_exported', seasonId, null, { families: ts.length, days: p.days })
+    changed()
+    return { rows, families: ts.length }
+  }
+  let sent = 0, failed = 0, error = ''
+  for (let i = 0; i < ts.length; i += 100) {
+    const chunk = ts.slice(i, i + 100)
+    const res = await sendBatch(chunk.map((t) => reminderMail(t, p.body, s.year)))
+    db.transaction(() => chunk.forEach((t, j) => { if (res[j]!.ok) { sent++; note(t, 'emailed') } else { failed++; error ||= res[j]!.error } }))()
+  }
+  audit(actor, 'interest_reminders_sent', seasonId, null, { sent, failed, days: p.days })
+  changed()
+  return { sent, failed, error, families: ts.length }
 }

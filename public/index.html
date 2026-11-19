@@ -18,21 +18,25 @@
 
 <div class="wrap" id="app" hidden>
   <header class="top">
-    <h1 class="brand"><img class="crest" src="/img/crest-180.png" alt="" width="60" height="60"><span class="brandtx"><small id="league">SE Baseball</small><span id="seasonTitle">League</span></span></h1>
+    <h1 class="brand"><img class="crest" src="/img/crest-180.png" alt="" width="60" height="60"><span class="brandtx"><small id="league">SE Baseball</small><span class="titlesel"><select id="seasonSel" aria-label="Season — everything below is for this season"></select><span id="seasonTitle" aria-hidden="true">Season</span><i aria-hidden="true">▾</i></span></span></h1>
     <div class="navr">
-      <div class="tools"><span id="live"></span><label class="seasonsel" for="seasonSel">Season <select id="seasonSel"></select></label></div>
+      <div class="tools"><span id="live"></span></div>
       <div class="who-am-i" id="whoami"></div>
       <div class="tabs" role="tablist" id="tabs">
+        <span class="tabgrp" aria-label="This season">
         <button role="tab" data-tab="seats" aria-selected="true">Seats</button>
         <button role="tab" data-tab="drafts" aria-selected="false">Drafts</button>
         <button role="tab" data-tab="coach" aria-selected="false" data-coach hidden>My players</button>
         <button role="tab" data-tab="campaigns" aria-selected="false" data-admin hidden>Registration</button>
         <button role="tab" data-tab="finance" aria-selected="false" data-admin hidden>Finance</button>
         <button role="tab" data-tab="outreach" aria-selected="false" data-admin hidden>Outreach</button>
-        <button role="tab" data-tab="regs" aria-selected="false" data-admin hidden>SE inbox<span class="badge" id="regBadge" hidden></span></button>
-        <button role="tab" data-tab="seasons" aria-selected="false" data-admin hidden>Seasons</button>
-        <button role="tab" data-tab="users" aria-selected="false" data-admin hidden>Users</button>
-        <button role="tab" data-tab="log" aria-selected="false" data-admin hidden>Activity</button>
+        <button role="tab" data-tab="seasons" aria-selected="false" data-admin hidden>Season</button>
+        </span>
+        <span class="tabgrp league" aria-label="League (admins)" data-owner hidden>
+        <button role="tab" data-tab="users" aria-selected="false" data-owner hidden>Users</button>
+        <button role="tab" data-tab="settings" aria-selected="false" data-owner hidden>Settings<span class="badge" id="regBadge" hidden></span></button>
+        <button role="tab" data-tab="log" aria-selected="false" data-owner hidden>Activity</button>
+        </span>
       </div>
     </div>
   </header>
@@ -41,13 +45,12 @@
   <!-- SEATS -->
   <section id="view-seats" class="overview">
     <div class="headline" id="headline" aria-live="polite"><div class="meta">Loading…</div></div>
-    <div class="panel ava" id="ava" hidden></div>
-    <div class="divs" id="divs"></div>
-    <div class="row">
-      <div class="totals" id="totals"></div><span class="spacer"></span>
-      <div class="legend"><span><i class="dot Registered"></i>Registered</span><span><i class="dot Expected"></i>Returner expected</span><span><i class="dot Need"></i>Returner — need to contact</span><span><i class="dot"></i>Open</span></div>
-      <a class="btn" id="capCsv" href="#">Download (CSV)</a>
-    </div>
+    <div class="kpis" id="kpis"></div>
+    <div class="panel sdivpanel"><div class="hd"><h2>Divisions</h2>
+        <div class="vlegend"><span><i class="sw yr1"></i>Returners registered</span><span><i class="sw yr2"></i>New kids registered</span><span><i class="sw heldsw"></i>Expected back</span><span><i class="sw risksw"></i>Needs a call</span><span><i class="capsw"></i>Seats</span></div>
+        <a class="btn" id="capCsv" href="#">Download CSV</a></div>
+      <div class="bd"><div id="divs" class="srows"></div>
+        <details><summary class="note">Show as a table</summary><div class="scroll"><table class="kt" id="divTable"></table></div></details></div></div>
     <div class="grid2 ages" id="ages"></div>
   </section>
 
@@ -59,7 +62,7 @@
   <!-- KIDS (admin) -->
   <section id="view-kids" hidden>
     <div class="panel">
-      <div class="hd dvhd"><div><button class="linkbtn backlink" data-back-seasons>← Seasons</button><h2 id="kTitle">Players</h2><div class="sub" id="kSub"></div></div>
+      <div class="hd dvhd"><div><button class="linkbtn backlink" data-back-seasons>← Season</button><h2 id="kTitle">Players</h2><div class="sub" id="kSub"></div></div>
         <div class="row"><a class="btn" id="kidsCsv" href="#">Download CSV</a><button class="btn primary" id="addKid">Add player</button></div></div>
       <div class="bd">
         <div class="segs" id="kSegs" role="tablist" aria-label="Which players"></div>
@@ -100,9 +103,26 @@
   </section>
 
   <!-- REGISTRATIONS (admin) -->
-  <section id="view-regs" class="grid2" hidden>
-    <div class="panel wide">
-      <div class="hd"><h2>Registration inbox</h2>
+  <section id="view-settings" hidden>
+    <div class="settingshd"><h2>Settings</h2><p class="sub">League-wide — not tied to a season. Admins only.</p></div>
+    <div class="setlayout">
+      <nav class="setnav" role="tablist" aria-label="Settings categories" id="setNav">
+        <button role="tab" data-set="general" aria-selected="true">General</button>
+        <button role="tab" data-set="email" aria-selected="false">Email</button>
+        <button role="tab" data-set="payments" aria-selected="false">Payments</button>
+        <button role="tab" data-set="signin" aria-selected="false">Sign-in &amp; access</button>
+        <button role="tab" data-set="sportsengine" aria-selected="false">SportsEngine<span class="badge" id="seBadge" hidden></span></button>
+      </nav>
+      <div class="setbody">
+        <div class="setpane" data-pane="general" role="tabpanel"><div class="panel"><div class="hd"><h2>General</h2></div><div class="bd" id="setGeneral"><p class="note">Loading…</p></div></div></div>
+        <div class="setpane" data-pane="email" role="tabpanel" hidden><div class="panel"><div class="hd"><h2>Email</h2></div><div class="bd" id="setEmail"></div></div></div>
+        <div class="setpane" data-pane="payments" role="tabpanel" hidden><div class="panel"><div class="hd"><h2>Payments</h2></div><div class="bd" id="setPay"></div></div></div>
+        <div class="setpane" data-pane="signin" role="tabpanel" hidden><div class="panel"><div class="hd"><h2>Sign-in &amp; access</h2></div><div class="bd" id="setSignin"></div></div></div>
+        <div class="setpane" data-pane="sportsengine" role="tabpanel" hidden>
+          <div class="panel"><div class="hd"><h2>SportsEngine webhook</h2></div><div class="bd" id="whInfo"></div></div>
+          <p class="note" style="margin:16px 0 8px">Registrations SportsEngine sends (or a report you import) are matched to a player and placed in a division. Anything it couldn’t place waits under <b>Needs attention</b>.</p>
+          <div class="panel">
+      <div class="hd"><h2>Deliveries</h2>
         <div class="row">
           <select id="regFilter" style="width:auto" aria-label="Filter">
             <option value="open">Needs attention</option><option value="placed">New kids placed</option><option value="returner">Returners registered</option>
@@ -116,7 +136,6 @@
         <div class="scroll"><table class="kt" id="regTable"></table></div>
       </div>
     </div>
-    <div class="panel"><div class="hd"><h2>SportsEngine webhook</h2></div><div class="bd" id="whInfo"></div></div>
     <div class="panel"><div class="hd"><h2>Import registration report</h2></div><div class="bd">
       <p class="note">Until the webhook is live, export the registration report from SportsEngine HQ as CSV and drop it here. Needs <b>First Name</b>, <b>Last Name</b> and the <b>program</b> column; <b>Date of Birth</b> and <b>Season</b> help. Each row is placed the same way a webhook is.</p>
       <input type="file" id="regFile" accept=".csv,text/csv">
@@ -129,11 +148,14 @@
       <div class="row"><input type="date" id="mDob" style="flex:1" aria-label="Birthdate"><input type="text" id="mProgram" placeholder="Program (e.g. Major/Minor)" style="flex:1" aria-label="Program"></div>
       <div class="row"><button class="btn primary" id="mSave">Record</button></div>
     </div></div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- DIVISIONS & TEAMS (admin) -->
   <section id="view-divisions" hidden>
-    <div class="panel"><div class="hd dvhd"><div><button class="linkbtn backlink" id="dvBack" data-back-seasons>← Seasons</button><h2 id="dvTitle">Divisions &amp; teams</h2><div class="sub" id="dvSummary"></div></div><button class="btn primary" id="addDiv">Add division</button></div>
+    <div class="panel"><div class="hd dvhd"><div><button class="linkbtn backlink" id="dvBack" data-back-seasons>← Season</button><h2 id="dvTitle">Divisions &amp; teams</h2><div class="sub" id="dvSummary"></div></div><button class="btn primary" id="addDiv">Add division</button></div>
       <div class="bd">
         <div id="dvList" class="dvlist"></div>
         <details class="explain"><summary>How divisions work</summary>
@@ -160,51 +182,53 @@
   </section>
 
   <!-- SEASONS (admin) -->
-  <section id="view-seasons" class="grid2" hidden>
-    <div class="panel"><div class="hd"><h2>Seasons</h2></div><div class="bd">
-      <table class="kt" id="seasonTable"></table>
-      <div class="row"><input type="number" id="newYear" placeholder="Year" style="width:100px" aria-label="Year"><button class="btn" id="addSeason">Add an earlier season</button></div>
-      <p class="note">Add an earlier season only to record history (open its divisions &amp; teams and import rosters). New seasons come from finishing the current one.</p>
-    </div></div>
-    <div class="panel"><div class="hd"><h2 id="rollTitle">Finish the season</h2></div><div class="bd" id="rollBox"></div></div>
+  <section id="view-seasons" hidden>
+    <div class="panel">
+      <div class="hd dvhd"><div><h2 id="shTitle">Season</h2><div class="sub" id="shSub"></div></div><div class="row" id="shStatus"></div></div>
+      <div class="bd"><div class="shcards" id="shCards"></div></div>
+    </div>
+    <div class="grid2">
+      <div class="panel"><div class="hd"><h2 id="rollTitle">Finish the season</h2></div><div class="bd" id="rollBox"></div></div>
+      <div class="panel"><div class="hd"><h2>All seasons</h2></div><div class="bd">
+        <table class="kt" id="seasonTable"></table>
+        <div class="row"><input type="number" id="newYear" placeholder="Year" style="width:100px" aria-label="Year"><button class="btn" id="addSeason">Add an earlier season</button></div>
+        <p class="note">Add an earlier season only to record history (then open its divisions &amp; teams and import rosters). New seasons come from finishing the current one.</p>
+      </div></div>
+    </div>
   </section>
 
   <!-- ACTIVITY (admin) -->
   <!-- FINANCE (admin): revenue and payment-plan receivables -->
   <section id="view-finance" hidden>
-    <div class="row finbar">
-      <select id="finCampaign" aria-label="Registration" style="width:auto"></select><span class="spacer"></span>
-      <button class="btn" id="finRun" title="Charge anything due now and send the “coming up” emails (this also runs on its own every 15 minutes)">Run due charges now</button>
-      <a class="btn" id="finCsv" href="#">Download payments (CSV)</a>
+    <div class="orhd"><div><h2>Finance</h2><p class="sub">Money for this season’s registrations.</p></div>
+      <div class="row"><select id="finCampaign" aria-label="Registration" style="width:auto"></select><a class="btn" id="finCsv" href="#">Download payments (CSV)</a></div></div>
+    <div class="setlayout">
+      <nav class="setnav" role="tablist" aria-label="Finance" id="finNav">
+        <button role="tab" data-fin="overview" aria-selected="true">Overview</button>
+        <button role="tab" data-fin="plans" aria-selected="false">Payment plans<span class="badge" id="finBadge" hidden></span></button>
+        <button role="tab" data-fin="breakdown" aria-selected="false">Breakdown</button>
+      </nav>
+      <div class="setbody">
+        <div data-finpane="overview" role="tabpanel"><div class="panel"><div class="hd"><h2>Overview</h2></div><div class="bd" id="finRevenue"><p class="note">Loading…</p></div></div></div>
+        <div data-finpane="plans" role="tabpanel" hidden><div class="panel"><div class="hd"><h2>Payment plans — what’s owed</h2>
+            <button class="btn" id="finRun" title="Charge anything due now and send the “coming up” emails (this also runs on its own every 15 minutes)">Run due charges now</button></div>
+          <div class="bd">
+            <div class="fintiles" id="finAging"></div>
+            <div class="row"><div class="segs finsegs" id="finFilters"></div><span class="spacer"></span><input type="search" id="finSearch" placeholder="Search family, player, email, phone" style="width:min(320px,100%)" aria-label="Search plans"></div>
+            <div class="scroll"><table class="kt finplans" id="finPlans"></table></div>
+            <p class="note">Plans charge the saved card on each due date, retry a declined card every 3 days (3 tries), and email the family a pay link each time. A reminder goes out 3 days before every payment. Click a family for their schedule, contact details, and to email, text or log a call.</p>
+          </div></div></div>
+        <div data-finpane="breakdown" role="tabpanel" hidden><div class="panel"><div class="hd"><h2>Breakdown</h2></div><div class="bd" id="finBreak"></div></div></div>
+      </div>
     </div>
-    <div class="panel"><div class="hd"><h2>Revenue</h2></div><div class="bd" id="finRevenue"><p class="note">Loading…</p></div></div>
-    <div class="panel"><div class="hd"><h2>Payment plans — what’s owed</h2></div>
-      <div class="bd">
-        <div class="fintiles" id="finAging"></div>
-        <div class="row"><div class="segs" id="finFilters"></div><span class="spacer"></span><input type="search" id="finSearch" placeholder="Search family, player, email, phone" style="width:min(320px,100%)" aria-label="Search plans"></div>
-        <div class="scroll"><table class="kt finplans" id="finPlans"></table></div>
-        <p class="note">Plans charge the saved card on each due date, retry a declined card every 3 days (3 tries), and email the family a pay link each time. A reminder goes out 3 days before every payment. Click a family for their schedule, contact details, and to email, text or log a call.</p>
-      </div></div>
   </section>
 
   <!-- USERS (admin): who may sign in -->
-  <section id="view-users" class="grid2" hidden>
+  <section id="view-users" hidden>
     <div class="panel">
-      <div class="hd"><h2>Add someone</h2></div>
-      <form class="bd" id="userAdd" style="display:grid;gap:10px">
-        <label>Email <input type="email" id="uEmail" required autocomplete="off"></label>
-        <label>Name <input type="text" id="uName" autocomplete="off" placeholder="Optional"></label>
-        <label>Access <select id="uRole"><option value="user">Member — seat counts, draft boards (and their team, if they coach)</option><option value="admin">Admin — sees and changes everything</option></select></label>
-        <label class="chk"><input type="checkbox" id="uBoard"> <span><b>Board of Directors</b> <small>Sees every admin area, changes nothing.</small></span></label>
-        <label class="chk"><input type="checkbox" id="uInvite" checked> Email them a sign-in link now</label>
-        <div class="row"><button class="btn primary" type="submit">Add</button></div>
-        <p class="note" id="uMailNote" hidden></p>
-      </form>
-    </div>
-    <div class="panel wide">
-      <div class="hd"><h2>People who can sign in</h2></div>
+      <div class="hd"><h2>People who can sign in</h2><button class="btn primary" id="userAddBtn">Add someone</button></div>
       <div class="bd"><div class="scroll"><table class="kt" id="userTable"></table></div>
-        <p class="note">Signing in is by emailed link only — anyone not on this list sees nothing but the public registration forms. One entry per person, with every hat they wear: <b>Admin</b> changes things, <b>Board</b> sees all the admin areas, and <b>Coach</b> comes from being named on a team (Seasons → Divisions &amp; teams). Changing someone's access or email signs them out.</p></div>
+        <p class="note">Signing in is by emailed link only — anyone not on this list sees nothing but the public registration forms. One entry per person, with every hat they wear: <b>Admin</b> changes things, <b>Board</b> sees all the admin areas, and <b>Coach</b> comes from being named on a team (Season → Divisions &amp; teams). Changing someone's access or email signs them out.</p></div>
     </div>
   </section>
 

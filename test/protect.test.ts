@@ -96,6 +96,59 @@ test('interest check: one click per kid moves the seat math', async () => {
   assert.equal(list.kind, 'interest')
   assert.equal(list.answers.yes, 2)
   assert.equal(list.answers.unsure, 1)
+
+  // Draft-room player sheet: the league's decision and notes are signed and kept; a family's answer can't be overridden.
+  const PN = await import('../src/lib/playernotes.js')
+  const edE = enr('Ed Kid').id, diE = enr('Di Kid').id
+  const sheet = PN.playerUpdate(edE, { decision: 'no', note: 'Moving to Lexington in March' }, 'admin@example.com', 'draft:majors')
+  assert.equal(sheet.status, 'Not returning')
+  assert.equal(sheet.history[0].action, 'player_note')
+  assert.deepEqual([sheet.history[0].by, (sheet.history[0].detail as { text: string }).text], ['admin@example.com', 'Moving to Lexington in March'])
+  assert.ok(sheet.history.some((h) => h.action === 'interest_answered' && h.by === 'admin@example.com'))
+  assert.equal(PN.lastNotes('2027').get(enr('Ed Kid').kid_id)?.by, 'admin@example.com')
+  assert.throws(() => PN.playerUpdate(diE, { decision: 'no' }, 'admin@example.com'), /family already answered/)
+  assert.equal(enr('Di Kid').status, 'Expected', 'a refused decision leaves nothing behind')
+  PN.playerUpdate(diE, { note: 'Confirmed at the fall picnic' }, 'board@example.com')
+  assert.equal(PN.playerSheet(diE).history[0].by, 'board@example.com')
+  assert.throws(() => PN.playerUpdate(diE, {}, 'x'), /decision or write a note/)
+
+  // Outreach to one player's parents: just that kid, any status but Registered.
+  const one = O.audience('2027', { kidIds: [enr('Ed Kid').kid_id] })
+  assert.deepEqual([one.kids, one.families.length, one.families[0]!.kids.map((k) => k.name)], [1, 1, ['Ed Kid']])
+  const reg = db.prepare(`SELECT kid_id FROM enrollments WHERE season_id = '2027' AND status = 'Registered'`).get() as { kid_id: string } | undefined
+  if (reg) assert.equal(O.audience('2027', { kidIds: [reg.kid_id] }).kids, 0, 'registered players are never emailed')
+  assert.ok(O.audience('2027', { kidIds: [] }).kids > 1, 'no kidIds = the usual group')
+
+  // One interest thread per player per season, tracked kid by kid, with reminders to the same thread.
+  const fay = L.createKid('Fay Kid', '2019-06-15')
+  L.enroll('2027', fay.id, { divisionId: L.divisionByKey('2027', 'rookie')!.id, returner: true }, A)
+  addContact(fay.id, { name: 'Lee Parent', email: 'lee@example.com', phone: '' }, 'manual')
+  const track = (kidId: string) => O.interestTracker('2027').players.find((x) => x.id === kidId)!
+  assert.equal(track(fay.id).state, 'not_asked')
+  const ask = { seasonId: '2027', campaignId: cid, subject: O.INTEREST_SUBJECT, body: O.INTEREST_BODY, divisionIds: [], statuses: [] as never[], kind: 'interest' as const }
+  const pv = O.preview(ask)
+  assert.equal(pv.families, 1, 'only the not-yet-asked family')
+  assert.ok(pv.alreadyAsked >= 3, 'everyone in the first check is skipped')
+  const fid = O.createOutreach(ask, A)
+  assert.equal(track(fay.id).state, 'undelivered', 'queued, not sent yet')
+  O.exportOutreach(fid)
+  assert.equal(track(fay.id).state, 'waiting')
+  assert.throws(() => O.createOutreach({ ...ask, kidIds: [fay.id] }, A), /already asked/)
+  assert.equal(O.audience('2027', { kind: 'register', kidIds: [fay.id] }).kids, 1, 'registration invites are not limited')
+  assert.equal(O.reminderPreview('2027', 7, O.REMINDER_BODY).families, 0, 'asked today — not due yet')
+  db.prepare(`UPDATE outreach SET created_at = datetime('now', '-10 days') WHERE id = ?`).run(fid)
+  const due = O.reminderPreview('2027', 7, O.REMINDER_BODY)
+  assert.equal(due.families, 1)
+  assert.equal(due.sample!.subject, 'Re: Is Fay playing in 2027?', 'same thread as the first email')
+  await assert.rejects(O.sendReminders('2027', { days: 7, body: 'no buttons', mode: 'export' }, A), /answer_buttons/)
+  const r = await O.sendReminders('2027', { days: 7, body: O.REMINDER_BODY, mode: 'export' }, 'admin@example.com')
+  assert.equal(r.families, 1)
+  assert.equal(track(fay.id).reminders, 1)
+  assert.equal(O.reminderPreview('2027', 7, O.REMINDER_BODY).families, 0, 'the reminder resets the clock')
+  const fm = db.prepare('SELECT token FROM outreach_messages WHERE outreach_id = ?').get(fid) as { token: string }
+  O.answerInterest(fm.token, [{ kidId: fay.id, intent: 'yes' }])
+  assert.deepEqual([track(fay.id).state, track(fay.id).answer], ['answered', 'yes'])
+  assert.equal(O.reminderPreview('2027', 0, O.REMINDER_BODY).families, 0, 'answered families are never reminded')
 })
 
 test('summer and fall registrations stay simple: no protection, no held seats', () => {

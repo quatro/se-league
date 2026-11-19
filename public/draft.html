@@ -36,9 +36,10 @@
   <!-- BOARD -->
   <section id="view-board" class="main">
     <div class="panel">
-      <div class="hd"><h2>Draft board</h2><div class="legend" id="legend">
+      <div class="hd"><h2>Draft board</h2><button class="btn" id="reviewBtn" hidden title="Go through each player and record what's happening">Review players</button><div class="legend" id="legend">
         <span><i class="dot Registered"></i>Registered</span><span><i class="dot Expected"></i>Expected</span>
-        <span><i class="dot Need"></i>Need to contact</span><span><i class="dot Not-returning"></i>Not returning</span></div></div>
+        <span><i class="dot Need"></i>Need to contact</span><span><i class="dot Not-returning"></i>Not returning</span><span class="cmk"><span class="cm-yes">Name</span>&nbsp;Family says coming back</span><span class="cmk"><span class="cm-reg">Name</span>&nbsp;Registered</span></div></div>
+      <div class="ckbar" id="ckBar" hidden></div>
       <div class="scroll"><table class="board" id="board"></table></div>
     </div>
     <aside class="panel" id="poolPanel">

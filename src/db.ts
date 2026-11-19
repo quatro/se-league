@@ -374,6 +374,14 @@ addColumn('offerings', 'when_full', `TEXT NOT NULL DEFAULT 'waitlist' CHECK (whe
 addColumn('order_players', 'held_seat', `INTEGER NOT NULL DEFAULT 0`)
 // Interest check (2026-11-16): outreach can ask "is your player coming back?" with one-click answers instead of
 // inviting a registration; the family's answer lives on the season enrollment.
+// Interest-check follow-ups go to the same message (same personal link, "Re:" subject): how many, and when last.
+addColumn('outreach_messages', 'reminders', `INTEGER NOT NULL DEFAULT 0`)
+addColumn('outreach_messages', 'reminded_at', `TEXT`)
+// Boy / Girl, from the family's own registration — so next year's form fills it in. Rosters never carried it.
+if (addColumn('kids', 'gender', `TEXT NOT NULL DEFAULT ''`))
+  db.exec(`UPDATE kids SET gender = (SELECT op.gender FROM order_players op JOIN orders o ON o.id = op.order_id
+    WHERE op.kid_id = kids.id AND op.gender IN ('Boy','Girl') ORDER BY o.created_at DESC LIMIT 1)
+    WHERE EXISTS (SELECT 1 FROM order_players op WHERE op.kid_id = kids.id AND op.gender IN ('Boy','Girl'))`)
 addColumn('outreach', 'kind', `TEXT NOT NULL DEFAULT 'register' CHECK (kind IN ('register','interest'))`)
 addColumn('enrollments', 'intent', `TEXT NOT NULL DEFAULT '' CHECK (intent IN ('','yes','no','unsure'))`)
 addColumn('enrollments', 'intent_at', 'TEXT')

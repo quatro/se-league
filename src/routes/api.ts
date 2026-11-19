@@ -6,6 +6,7 @@ import { ageBreakdown } from '../lib/ages.js'
 import { clearFailures, login, logout, noteFailure, requireAdmin, requireUser, throttled } from '../lib/auth.js'
 import * as U from '../lib/users.js'
 import * as CO from '../lib/coaches.js'
+import * as PN from '../lib/playernotes.js'
 import * as D from '../lib/drafts.js'
 import * as L from '../lib/league.js'
 import { contactsFor, deleteContact, importContacts, saveContact } from '../lib/contacts.js'
@@ -110,7 +111,7 @@ api.get('/api/home', (req, res) => {
 
 api.get('/api/seasons/:id/state', requireUser, wrap((req) => L.seasonState(p(req, 'id'), !!req.board)))
 api.get('/api/seasons/:id/ages', requireUser, wrap((req) => ageBreakdown(p(req, 'id'))))
-api.get('/api/drafts/:id/state', requireUser, wrap((req) => D.draftState(p(req, 'id'), !!req.admin)))
+api.get('/api/drafts/:id/state', requireUser, wrap((req) => D.draftState(p(req, 'id'), !!req.admin, !!req.board)))
 
 api.get('/api/stream', requireUser, (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
@@ -235,6 +236,18 @@ admin.post('/drafts/:id/sibling', wrap((req) => {
   const b = z.object({ playerId: z.string(), teamId: z.string(), round: z.number().int().min(1).max(40) }).parse(req.body)
   return D.siblingPick(p(req, 'id'), b.playerId, b.teamId, b.round, actor(req))
 }))
+// Player sheet in the draft room: the decision on a kid and a running, signed log of what's happening.
+const sheetFor = (req: Request) => {
+  const r = D.mustDraft(p(req, 'id')), e = L.enrollment(p(req, 'eid'))
+  if (!e || e.season_id !== r.season_id) throw new L.UserError('That player isn’t in this season')
+  return { r, e }
+}
+admin.get('/drafts/:id/players/:eid', wrap((req) => PN.playerSheet(sheetFor(req).e.id)))
+admin.post('/drafts/:id/players/:eid', wrap((req) => {
+  const { r, e } = sheetFor(req)
+  const b = z.object({ decision: z.enum(['yes', 'no', 'unsure']).optional(), note: z.string().max(PN.NOTE_MAX).optional() }).parse(req.body)
+  return { ...PN.playerUpdate(e.id, b, actor(req), `draft:${r.key}`), message: b.decision && b.note ? 'Decision and note saved' : b.decision ? 'Decision saved' : 'Note added' }
+}))
 admin.post('/drafts/:id/undo', wrap((req) => { D.undoLast(p(req, 'id'), actor(req)) }))
 admin.post('/drafts/:id/clock/start', wrap((req) => { D.startClock(p(req, 'id'), actor(req)) }))
 admin.post('/drafts/:id/picks/clear', wrap((req) => { z.object({ confirm: z.literal('CLEAR') }).parse(req.body); D.clearPicks(p(req, 'id'), actor(req)) }))
@@ -283,7 +296,7 @@ admin.post('/contacts/import', wrap((req) => importContacts(z.object({ text: z.s
 
 // outreach: emailing returning families to register early
 const outreachBody = z.object({ seasonId: z.string(), campaignId: z.string(), subject: z.string().max(300), body: z.string().max(10_000),
-  divisionIds: z.array(z.string()).max(50).default([]), statuses: z.array(z.enum(STATUSES)).max(10).default([]), kind: z.enum(['register', 'interest']).default('register') })
+  divisionIds: z.array(z.string()).max(50).default([]), statuses: z.array(z.enum(STATUSES)).max(10).default([]), kidIds: z.array(z.string()).max(20).optional(), kind: z.enum(['register', 'interest']).default('register') })
 admin.get('/outreach', wrap((req) => ({
   list: O.listOutreach(String(req.query.season ?? '')), defaults: { subject: O.DEFAULT_SUBJECT, body: O.DEFAULT_BODY },
   interest: { subject: O.INTEREST_SUBJECT, body: O.INTEREST_BODY },
@@ -306,6 +319,15 @@ admin.post('/outreach/:id/send', wrap(async (req) => {
   return { ...r, message: r.failed ? `Sent ${r.sent}; ${r.failed} failed — ${r.error}` : `Sent ${r.sent}` }
 }))
 admin.get('/outreach/:id', wrap((req) => O.outreachDetail(p(req, 'id'))))
+// Interest check, player by player, and follow-ups to whoever hasn't answered.
+admin.get('/interest', wrap((req) => ({ ...O.interestTracker(z.string().parse(req.query.season)), reminderBody: O.REMINDER_BODY })))
+const remindBody = z.object({ seasonId: z.string(), days: z.number().int().min(0).max(120), body: z.string().max(10_000) })
+admin.post('/interest/remind/preview', wrap((req) => { const b = remindBody.parse(req.body); return O.reminderPreview(b.seasonId, b.days, b.body) }))
+admin.post('/interest/remind', wrap(async (req) => {
+  const b = remindBody.extend({ mode: z.enum(['send', 'export']) }).parse(req.body)
+  const r = await O.sendReminders(b.seasonId, b, actor(req))
+  return { ...r, message: b.mode === 'export' ? `Reminder list for ${r.families} parents downloaded — each marked as reminded` : `${r.sent} reminders sent${r.failed ? ` · ${r.failed} failed` : ''}` }
+}))
 api.get('/api/admin/outreach/:id/export.csv', requireAdmin, wrap((req, res) => sendCsv(res, 'outreach.csv', O.exportOutreach(p(req, 'id')))))
 admin.patch('/kids/:id', wrap((req) => {
   const b = z.object({ name: z.string().min(1).max(120).optional(), birthdate: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/), z.null()]).optional(),
@@ -362,10 +384,14 @@ admin.post('/registrations/manual', wrap((req) => {
 }))
 
 // people allowed to sign in
+/** Handing someone else a sign-in link is reserved for the people in LINK_SENDERS. */
+const canSendLinks = (req: Request) => !!req.admin && config.linkSenders.includes(req.user!.email.toLowerCase())
+function mustSendLinks(req: Request) { if (!canSendLinks(req)) throw new L.UserError('Only the league’s sign-in owner can send sign-in links to other people') }
 const userBody = z.object({ email: z.string().max(200), name: z.string().max(120).optional(), role: z.enum(['user', 'admin']), board: z.boolean().optional() })
-admin.get('/users', wrap(() => ({ users: U.listUsers().map((u) => ({ ...u, coaching: CO.coachingFor(u.email) })), mail: U.mailOn() })))
+admin.get('/users', wrap((req) => ({ users: U.listUsers().map((u) => ({ ...u, coaching: CO.coachingFor(u.email) })), mail: U.mailOn(), canSendLinks: canSendLinks(req) })))
 admin.post('/users', wrap(async (req) => {
   const b = userBody.extend({ invite: z.boolean().optional() }).parse(req.body)
+  if (b.invite) mustSendLinks(req)
   const u = U.addUser(b, actor(req))
   if (b.invite) { await U.sendLoginLink(u.email, U.originFor(req), '/'); return { ok: true, message: `Added ${u.email} and emailed a sign-in link` } }
   return { ok: true, message: `Added ${u.email}` }
@@ -373,13 +399,22 @@ admin.post('/users', wrap(async (req) => {
 admin.patch('/users/:id', wrap((req) => { U.updateUser(Number(p(req, 'id')), userBody.partial().parse(req.body), req, actor(req)) }))
 admin.delete('/users/:id', wrap((req) => { U.removeUser(Number(p(req, 'id')), req, actor(req)) }))
 // For when email isn't set up (or a message went to spam): the admin hands the link over themselves.
-admin.post('/users/:id/link', wrap((req) => ({ url: U.linkFor(Number(p(req, 'id')), U.originFor(req)) })))
+admin.post('/users/:id/link', wrap((req) => { mustSendLinks(req); return { url: U.linkFor(Number(p(req, 'id')), U.originFor(req)) } }))
 admin.post('/users/:id/email-link', wrap(async (req) => {
+  mustSendLinks(req)
   const u = U.userById(Number(p(req, 'id'))); if (!u) throw new L.UserError('Unknown user')
   await U.sendLoginLink(u.email, U.originFor(req), '/', true)
   return { ok: true, message: `Sign-in link emailed to ${u.email}` }
 }))
 
+/** League-wide settings and connections, for the Settings page (admins only). Never returns a secret. */
+admin.get('/settings', wrap(() => ({
+  league: config.leagueName, baseUrl: config.baseUrl, timeZone: config.timeZone,
+  mail: { on: !!config.mail.resendApiKey, from: config.mail.from || '(Resend test sender)', replyTo: config.mail.replyTo },
+  stripe: { on: !!config.stripe.secretKey, mode: config.stripe.secretKey.startsWith('sk_live') || config.stripe.secretKey.startsWith('rk_live') ? 'live' : 'test',
+    webhook: `${config.baseUrl}/webhooks/stripe`, webhookSigned: !!config.stripe.webhookSecret },
+  linkSenders: config.linkSenders,
+})))
 admin.get('/audit', wrap((req) => {
   const sid = req.query.season ? String(req.query.season) : null
   return db.prepare(`SELECT a.*, k.name AS kid_name FROM audit a LEFT JOIN kids k ON k.id = a.kid_id

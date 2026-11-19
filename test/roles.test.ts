@@ -9,6 +9,7 @@ process.env.DB_PATH = path.join(dir, 'league.db')
 process.env.AUTH_DB_PATH = path.join(dir, 'auth.db') // never the real shared login database
 process.env.STRIPE_SECRET_KEY = 'sk_test_fake'
 process.env.RESEND_API_KEY = ''
+process.env.LINK_SENDERS = 'boss@example.com'
 
 const U = await import('../src/lib/users.js')
 const L = await import('../src/lib/league.js')
@@ -18,9 +19,9 @@ const { authDb } = await import('../src/lib/authdb.js')
 
 type Req = Parameters<typeof requireAdmin>[0]
 /** Run the admin guard for a signed-in person; returns the status it answered with, or 'next'. */
-function guard(user: { id: number; email: string; role: 'user' | 'admin' }, method: string): number | 'next' {
+function guard(user: { id: number; email: string; role: 'user' | 'admin' }, method: string, url = '/api/admin/seasons/2027/state'): number | 'next' {
   const req = { method, user: { ...user, name: '' }, admin: user.role === 'admin' ? { id: user.id, username: user.email } : undefined,
-    board: user.role === 'admin' || hasRole(user.id, 'board'), headers: { host: 'x' }, is: () => true } as unknown as Req
+    board: user.role === 'admin' || hasRole(user.id, 'board'), headers: { host: 'x' }, is: () => true, originalUrl: url } as unknown as Req
   let code: number | 'next' = 'next'
   const res = { status: (c: number) => ({ json: () => { code = c } }) } as unknown as Parameters<typeof requireAdmin>[1]
   requireAdmin(req, res, () => {})
@@ -41,6 +42,9 @@ test('one person, several hats: Board sees admin areas but changes nothing, and 
   assert.equal(guard(pat, 'PATCH'), 403)
   assert.equal(guard(kim, 'GET'), 403)
   assert.equal(guard(boss, 'POST'), 'next')
+  // League-wide pages are admins' only: the Board can't even look.
+  for (const url of ['/api/admin/users', '/api/admin/settings', '/api/admin/audit?season=2027', '/api/admin/registrations?filter=open'])
+    { assert.equal(guard(pat, 'GET', url), 403, url); assert.equal(guard(boss, 'GET', url), 'next', url) }
 
   // Hats change independently; one row per person.
   U.updateUser(kim.id, { board: true }, { user: boss } as never, A)
@@ -60,4 +64,9 @@ test('one person, several hats: Board sees admin areas but changes nothing, and 
   // Removing someone takes their hats with them.
   U.removeUser(pat.id, { user: boss } as never, A)
   assert.equal(hasRole(pat.id, 'board'), false)
+})
+
+test('only LINK_SENDERS can hand out sign-in links', async () => {
+  const { config } = await import('../src/config.js')
+  assert.deepEqual(config.linkSenders, ['boss@example.com'])
 })

@@ -31,7 +31,7 @@ export interface Team {
   id: string; season_id: string; division_id: string; name: string; color: string; fg: string; draft_order: number
   wins: number | null; losses: number | null; ties: number | null; coach: string; coach_email: string; coach_phone: string
 }
-export interface Kid { id: string; name: string; name_key: string; birthdate: string | null; se_profile_id: string | null; notes: string }
+export interface Kid { id: string; name: string; name_key: string; birthdate: string | null; se_profile_id: string | null; notes: string; gender?: string }
 export interface Enrollment {
   id: string; season_id: string; kid_id: string; division_id: string | null; team_id: string | null; returning_team_id: string | null
   age: number | null; returner: number; status: Status; status_locked: number; division_locked: number; tryout: number

@@ -10,7 +10,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (c) => `$${(c / 100).toFixed(c % 100 ? 2 : 0)}`;
 const slug = decodeURIComponent(location.pathname.split('/')[2] || '');
 const DRAFT = `reg-draft-${slug}`;
-let C = null, nextId = 1, payPlan = false;
+let C = null, nextId = 1, payPlan = false, payDay = null;
 
 async function call(method, url, body) {
   const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
@@ -82,7 +82,7 @@ function playerCard(d = {}) {
       <label>First name<input type="text" name="first" value="${esc(d.firstName)}" required></label>
       <label>Last name<input type="text" name="last" value="${esc(d.lastName)}" required></label>
       <label>Birthdate<input type="date" name="dob" value="${esc(d.birthdate)}" required><small class="agehint"></small></label>
-      <label>Gender<select name="gender"><option value="">Choose…</option>${['Boy', 'Girl'].map((g) => `<option ${d.gender === g ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+      <fieldset class="gfield"><legend>Gender</legend><div class="gseg">${['Boy', 'Girl'].map((g) => `<label><input type="radio" name="gender-${pid}" data-gender value="${g}" ${d.gender === g ? 'checked' : ''}><span>${g}</span></label>`).join('')}</div></fieldset>
     </div>
     <div class="returning" aria-live="polite"></div>
     <div class="siblings" aria-live="polite"></div>
@@ -184,11 +184,13 @@ async function famAction(act) {
       const blank = cards().find((p) => !p.querySelector('[name=first]').value.trim() && !p.querySelector('[name=last]').value.trim() && !p.querySelector('[name=dob]').value);
       if (blank && add.length) blank.remove();
       let first;
-      for (const k of add) { const sec = playerCard({ firstName: k.firstName, lastName: k.lastName, birthdate: k.birthdate, returning: k.kidId }); first ||= sec; }
+      for (const k of add) { const sec = playerCard({ firstName: k.firstName, lastName: k.lastName, birthdate: k.birthdate, gender: k.gender, returning: k.kidId }); first ||= sec; }
       FAM.added = [...FAM.added, ...add.map((k) => k.firstName)];
       FAM.state = 'done'; drawFam();
       redrawSiblings(); renderSummary();
-      if (first) { openCard(first); first.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      for (const sec of cards()) if (add.some((k) => k.kidId === sec._returning)) sec._showLeft = true;
+      // Straight to the first thing we couldn't fill in for them (usually gender, or a question).
+      if (first) { openCard(first); first.scrollIntoView({ behavior: 'smooth', block: 'start' }); setTimeout(() => goToNext(first), 700); }
     }
   } catch (err) { drawFam(err.message); }
 }
@@ -207,6 +209,9 @@ async function lookupReturning(sec) {
   if (sec._lookedUp !== key) return; // they kept typing
   sec._matches = r.matches;
   if (sec._returning && sec._returning !== 'new' && !r.matches.some((m) => m.id === sec._returning)) sec._returning = '';
+  // Added already confirmed (from the family list or a sibling): the card was drawn before we knew their team,
+  // so draw it again — the tryout question depends on it.
+  if (matchOf(sec)) renderPlayer(sec);
   renderReturning(sec);
   pickSuggested(sec);
   lookupSiblings(sec);
@@ -305,9 +310,13 @@ function drawReturning(sec) {
   const m = matchOf(sec);
   if (m) {
     const where = [m.division, m.team].filter(Boolean).map(esc).join(' · ');
-    box.innerHTML = `<div class="rbanner yes" role="status"><span class="rcheck" aria-hidden="true">✓</span>
-      <div><b>Welcome back, ${esc(first)}!</b><span>${where ? `${where} in ${m.year}. ` : ''}${m.dobDiffers ? 'We’ll update the birthdate on file.' : 'We picked their division and skipped the new-player questions.'}</span></div>
-      <button type="button" class="linkbtn" data-askret>Not ${esc(first)}? Change</button></div>`;
+    // One slim line: who we matched, and the way out. The name, birthdate and gender fields fold away
+    // (applyIdState) so the questions still to answer are on screen.
+    const dob = sec.querySelector('[name=dob]').value, g = genderOf(sec);
+    const born = dob ? new Date(`${dob}T12:00:00Z`).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '';
+    box.innerHTML = `<div class="rconf" role="status"><span class="rcheck sm" aria-hidden="true">✓</span>
+      <span class="rconf-tx"><b>Welcome back!</b> ${where ? `${where} in ${m.year}` : `Played in ${m.year}`}<span class="rconf-sub">${[born && `Born ${esc(born)}`, g && esc(g)].filter(Boolean).join(' · ')}${m.dobDiffers ? ' · we’ll update the birthdate on file' : ''}</span></span>
+      <span class="rconf-acts"><button type="button" class="linkbtn" data-editid>${sec._editId ? 'Hide details' : 'Edit'}</button><button type="button" class="linkbtn" data-askret>Not ${esc(first)}?</button></span></div>`;
   } else if (sec._returning === 'new') {
     box.innerHTML = `<div class="rbanner" role="status"><div><b>New player — welcome!</b></div><button type="button" class="linkbtn" data-askret>Change</button></div>`;
   } else if (!sec._dismissed) {
@@ -386,13 +395,27 @@ function answerReturning(sec, value) {
   redrawSiblings();
   renderSummary();
   const need = missing(sec);
-  const next = !sec.querySelector('[name=gender]').value ? sec.querySelector('[name=gender]')
-    : sec.querySelector('.pqs :is(select,input,textarea):not([type=hidden])');
+  // We know their gender from a past registration: fill it in.
+  if (m?.gender && !genderOf(sec)) { const g = sec.querySelector(`[data-gender][value="${m.gender}"]`); if (g) g.checked = true; renderSummary(); }
   // The "what's left" note under the banner; renderHead keeps it current as they fill things in.
   sec._showLeft = !!m;
   drawLeft(sec, need);
-  next?.focus();
+  // Bring the next thing to fill in onto the screen — the "Welcome back" note sits just under Gender,
+  // so with Gender at the top of the screen they see both. (Focus alone doesn't scroll on phones.)
+  setTimeout(() => goToNext(sec), 60);
 }
+/** Scroll to the next blank thing in a card (no red outline — they haven't done anything wrong). */
+function goToNext(sec, next) {
+  if (!sec.isConnected || $('retDlg')?.open) return;
+  const blank = (el) => (el.type === 'radio' || el.type === 'checkbox') ? !sec.querySelector(`[name="${CSS.escape(el.name)}"]:checked`) : !String(el.value || '').trim();
+  next ||= [...sec.querySelectorAll('[data-gender],[data-program],.pqs :is(input,select,textarea):is([required],[data-req])')].find((x) => !x.disabled && x.offsetParent && blank(x));
+  // A confirmed returner's card is short now: put the whole card at the top so they see everything that's left.
+  const target = sec.classList.contains('idok') ? sec : next ? next.closest('fieldset,label') || next : sec.querySelector('.returning');
+  target?.scrollIntoView({ behavior: 'smooth', block: target === sec || next?.matches('[data-gender]') ? 'start' : 'center' });
+  if (next && !next.matches('[type=text],textarea')) next.focus({ preventScroll: true }); // no surprise keyboard
+}
+// A returner with their division already picked: show just that one (Change shows the rest).
+const foldDiv = (sec, ok, cur) => isReturner(sec) && !sec._allDiv && ok.length > 1 && ok.some((o) => o.id === cur);
 function renderPlayer(sec) {
   const d = sec._saved || {};
   const dob = sec.querySelector('[name=dob]').value, age = leagueAge(dob);
@@ -402,9 +425,11 @@ function renderPlayer(sec) {
   const cur = sec.querySelector('[name=program]:checked')?.value || d.offeringId;
   const prog = sec.querySelector('.programs');
   prog.innerHTML = age == null ? '<p class="note">Enter a birthdate to see the divisions this player can join.</p>'
-    : ok.length ? `<b style="font-size:.88rem">Division</b>${ok.map((o) => `<label><input type="radio" name="program-${sec.dataset.pid}" data-program value="${esc(o.id)}" ${o.id === cur || ok.length === 1 ? 'checked' : ''}>
+    : ok.length ? `<b style="font-size:.88rem">Division${foldDiv(sec, ok, cur) ? ' <button type="button" class="linkbtn" data-alldiv>Change</button>' : ''}</b>${ok.filter((o) => !foldDiv(sec, ok, cur) || o.id === cur).map((o) => `<label><input type="radio" name="program-${sec.dataset.pid}" data-program value="${esc(o.id)}" ${o.id === cur || ok.length === 1 ? 'checked' : ''}>
         <span><b>${esc(o.name)} ${shutFor(o, matchOf(sec)) ? '<span class="pill wait">Full</span>' : fullFor(o, matchOf(sec)) ? `<span class="pill wait">${o.protected ? 'Waitlist' : 'Full — waitlist'}</span>` : o.left != null && o.left <= 5 ? `<span class="pill wait">${o.left} left</span>` : ''}</b>${o.description ? `<span class="sub">${esc(o.description)}</span>` : ''}</span></label>`).join('')}`
       : `<p class="err-text">No ${C.campaign.year} division fits league age ${age}.</p>`;
+  // Only one division showing and it's picked: a slim line, not a big option box.
+  prog.classList.toggle('one', age != null && isReturner(sec) && prog.querySelectorAll('[data-program]').length === 1 && !!prog.querySelector('[data-program]:checked'));
   const offeringId = sec.querySelector('[data-program]:checked')?.value;
   const offering = C.offerings.find((o) => o.id === offeringId);
   // Say it plainly the moment we know: full, but they can still sign up and pay nothing today.
@@ -420,7 +445,11 @@ function renderPlayer(sec) {
   const its = offering ? C.items.filter((i) => applies(i, offering.id)) : [];
   const qty = (i) => { const el = sec.querySelector(`[data-item="${i.id}"]`); return el ? (el.type === 'checkbox' ? (el.checked ? 1 : 0) : +el.value) : (d.items?.[i.id] ?? 0); };
   const prevQ = Object.fromEntries(its.map((i) => [i.id, qty(i)]));
-  sec.querySelector('.items').innerHTML = its.length ? `<b style="font-size:.88rem">Fees &amp; add-ons${waits ? ' <span class="sub">(charged only if a spot opens up)</span>' : ''}</b>` + its.map((i) => `<div class="itemrow"><div><b>${esc(i.name)}</b>${i.required ? ' <span class="sub">required</span>' : ''}${i.description ? `<div class="sub">${esc(i.description)}</div>` : ''}</div>
+  // Required fees need no answer: one line. The add-ons they can choose get a row each.
+  const req = its.filter((i) => i.required), opt = its.filter((i) => !i.required);
+  sec.querySelector('.items').innerHTML = its.length ? `<b style="font-size:.88rem">Fees &amp; add-ons${waits ? ' <span class="sub">(charged only if a spot opens up)</span>' : ''}</b>`
+    + (req.length ? `<div class="itemrow reqrow"><div><span class="sub">Included:</span> ${req.map((i) => `${esc(i.name)} <span class="sub">${money(i.price_cents)}</span>`).join('<span class="dotsep">·</span>')}</div><span class="price">${money(req.reduce((a, i) => a + i.price_cents, 0))}</span></div>` : '')
+    + opt.map((i) => `<div class="itemrow"><div><b>${esc(i.name)}</b>${i.required ? ' <span class="sub">required</span>' : ''}${i.description ? `<div class="sub">${esc(i.description)}</div>` : ''}</div>
       <div class="row" style="flex-wrap:nowrap">${i.required ? '<span class="sub">×1</span>' : i.max_qty > 1
         ? `<select data-item="${esc(i.id)}" aria-label="${esc(i.name)} quantity">${Array.from({ length: i.max_qty + 1 }, (_, n) => `<option ${prevQ[i.id] === n ? 'selected' : ''}>${n}</option>`).join('')}</select>`
         : `<input type="checkbox" data-item="${esc(i.id)}" aria-label="Add ${esc(i.name)}" ${prevQ[i.id] ? 'checked' : ''}>`}<span class="price">${money(i.price_cents)}${i.max_qty > 1 ? ' each' : ''}</span></div></div>`).join('') : '';
@@ -451,7 +480,7 @@ function tryoutHtml(sec, offering, d) {
     ${opt('yes', 'Yes — consider them for Majors too', `If a Majors team drafts them, they play Majors and the ${esc(offering.name)}. If not, they play in the ${esc(offering.name)}.`)}
     ${opt('no', `No — ${esc(offering.name)} only`, `They play in the ${esc(offering.name)}.`)}</fieldset>`;
   const gc = groupCaseOf(sec, offering), ages = offering.min_age != null ? `${offering.min_age}–${offering.max_age}` : '';
-  if (gc === 'majors') return info(`Returning to Majors${m?.team ? ` — ${esc(m.team)}` : ''}`, `${first} stays on their Majors team. No tryout needed.`);
+  if (gc === 'majors') return `<p class="trynote">✓ Back on ${m?.team ? `the ${esc(m.team)}` : 'their Majors team'} — no tryout needed.</p>`;
   if (gc === 'minors') {
     const team = m?.tryoutTeam ? `the ${esc(m.tryoutTeam)}` : 'their Minors team';
     return `<fieldset class="choice tryq"><legend>Does ${first} want to try out for Majors?${star}</legend>
@@ -464,13 +493,14 @@ function tryoutHtml(sec, offering, d) {
       ${opt('no', 'Minors only', 'They go straight into the Minors draft.')}</fieldset>`;
   return info('Tryouts required', `New players${ages ? ` ages ${ages}` : ''} go to tryouts. The draft places each player on a Majors or Minors team.`);
 }
+const genderOf = (sec) => sec.querySelector('[data-gender]:checked')?.value || '';
 function readPlayer(sec) {
   const offeringId = sec.querySelector('[data-program]:checked')?.value || '';
   const items = {}, answers = {};
   sec.querySelectorAll('[data-item]').forEach((el) => (items[el.dataset.item] = el.type === 'checkbox' ? (el.checked ? 1 : 0) : +el.value));
   for (const q of C.questions.filter((q) => q.scope === 'player')) { const v = readQuestion(sec, q, `pq-${sec.dataset.pid}-${q.id}`); if (v !== undefined) answers[q.id] = v; }
   return { firstName: sec.querySelector('[name=first]').value.trim(), lastName: sec.querySelector('[name=last]').value.trim(), birthdate: sec.querySelector('[name=dob]').value,
-    gender: sec.querySelector('[name=gender]').value, offeringId, items, answers, returning: sec._returning || undefined,
+    gender: genderOf(sec), offeringId, items, answers, returning: sec._returning || undefined,
     tryout: asksTryout(sec, C.offerings.find((o) => o.id === offeringId)) ? readTryout(sec) : undefined };
 }
 function readForm() {
@@ -479,7 +509,7 @@ function readForm() {
   for (const q of C.questions.filter((q) => q.scope === 'family')) { const a = readQuestion($('familyQs'), q, `fq-${q.id}`); if (a !== undefined) answers[q.id] = a; }
   return {
     guardian: { firstName: v('gFirst'), lastName: v('gLast'), email: v('gEmail'), phone: v('gPhone'), address: v('gAddress'), city: v('gCity'), state: v('gState'), zip: v('gZip') },
-    answers, players: [...document.querySelectorAll('.player')].map(readPlayer), plan: payPlan,
+    answers, players: [...document.querySelectorAll('.player')].map(readPlayer), plan: payPlan, payDay: payPlan ? dayFor() ?? undefined : undefined,
   };
 }
 
@@ -520,12 +550,21 @@ function playerCost(sec, p) {
   }
   return { o, lines, total: lines.reduce((t, l) => t + l.cents, 0), waits: false };
 }
+/* A confirmed returner: we already know who they are, so fold the name / birthdate / gender fields away
+   (gender stays until it's picked) and let the fees and questions come up the screen. "Edit" brings them back. */
+function applyIdState(sec) {
+  const folded = isReturner(sec) && !!matchOf(sec) && !sec._editId;
+  sec.classList.toggle('idok', folded);
+  const fields = sec.querySelector('.fields');
+  for (const el of fields.children) el.hidden = folded && !(el.classList.contains('gfield') && !genderOf(sec));
+  fields.hidden = folded && [...fields.children].every((el) => el.hidden);
+}
 /* After a "Yes": what this returner still needs, kept live, gone once they're done. */
 function drawLeft(sec, need) {
   let el = sec.querySelector('.returning .rleft');
   if (!sec._showLeft || !isReturner(sec) || !need.length) { el?.remove(); return; }
   if (!el) {
-    const banner = sec.querySelector('.returning .rbanner');
+    const banner = sec.querySelector('.returning .rbanner, .returning .rconf');
     if (!banner) return;
     el = document.createElement('p'); el.className = 'rleft'; banner.after(el);
   }
@@ -533,17 +572,44 @@ function drawLeft(sec, need) {
 }
 /* "Done" with something left: take them to the first unanswered field and point at it. */
 function showMissing(sec) {
-  sec.querySelectorAll('.missing').forEach((x) => x.classList.remove('missing'));
+  document.querySelectorAll('.reg .missing').forEach((x) => x.classList.remove('missing'));
   const blank = (el) => el.type === 'radio' || el.type === 'checkbox'
-    ? !sec.querySelector(`[name="${CSS.escape(el.name)}"]:checked`) : !String(el.value || '').trim();
-  const el = [...sec.querySelectorAll(':is(input,select,textarea):is([required],[data-req]),[name=gender]')].find((x) => !x.disabled && x.offsetParent && blank(x));
-  if (!el) return;
+    ? !sec.querySelector(`[name="${CSS.escape(el.name)}"]:checked`)
+    : el.type === 'email' ? !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(el.value.trim()) : !String(el.value || '').trim();
+  const el = [...sec.querySelectorAll(':is(input,select,textarea):is([required],[data-req]),[data-gender]')].find((x) => !x.disabled && x.offsetParent && blank(x));
+  if (!el) return null;
   const box = el.closest('fieldset') || el.closest('label') || el;
   box.classList.add('missing');
   box.scrollIntoView({ behavior: 'smooth', block: 'center' });
   el.focus({ preventScroll: true });
   const clear = () => { box.classList.remove('missing'); box.removeEventListener('change', clear); box.removeEventListener('input', clear); };
   box.addEventListener('change', clear); box.addEventListener('input', clear);
+  return el;
+}
+/* Register tapped with something left: go to the first thing missing — parent, then each player, then the
+   family questions — open it, outline it, and say what else is left. */
+function goToMissing() {
+  const parent = document.querySelector('.regsec.guardian');
+  const g = showMissing(parent);
+  const left = [];
+  if (g) left.push('your contact details');
+  for (const sec of cards()) if (sec._need?.length) left.push(`${sec.querySelector('[name=first]').value.trim() || 'a player'}: ${sec._need.join(', ')}`);
+  const famBox = $('familySec');
+  const famBlank = !famBox.hidden && [...famBox.querySelectorAll('[data-req]')].some((el) => (el.type === 'radio' || el.type === 'checkbox') ? !famBox.querySelector(`[name="${CSS.escape(el.name)}"]:checked`) : !el.value.trim());
+  if (famBlank) left.push('the questions under “Your family”');
+  if (!left.length) return false;
+  $('err').textContent = `Almost there — still needed: ${left.join('; ')}.`;
+  if (g) return true;
+  const sec = cards().find((s) => s._need?.length);
+  if (sec) {
+    openCard(sec);
+    sec.querySelector('.pmissing').textContent = `Still needed: ${sec._need.join(', ')}.`;
+    if (sec._matches?.length && !sec._returning) { askReturning(sec); return true; }
+    if (!showMissing(sec)) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return true;
+  }
+  showMissing(famBox);
+  return true;
 }
 function renderHead(sec, n, p, cost) {
   const age = leagueAge(p.birthdate), m = matchOf(sec), need = missing(sec);
@@ -559,6 +625,7 @@ function renderHead(sec, n, p, cost) {
     : need.length ? '<span class="tag need">Needs info</span>' : '<span class="tag ok">Ready</span>';
   sec.querySelector('.pamt').textContent = cost.o ? money(cost.total) : '';
   sec._need = need;
+  applyIdState(sec);
   drawLeft(sec, need);
   if (!need.length) sec.querySelector('.pmissing').textContent = '';
 }
@@ -566,8 +633,8 @@ function renderHead(sec, n, p, cost) {
 /* ---------- payment plan: the same schedule the server makes (it checks again at checkout) ---------- */
 const dUtc = (d) => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10));
 const dIso = (t) => new Date(t).toISOString().slice(0, 10);
-function addMonthsIso(d, n) {
-  const y = +d.slice(0, 4), m = +d.slice(5, 7) - 1 + n, day = +d.slice(8, 10), last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+function addMonthsIso(d, n, dom) {
+  const y = +d.slice(0, 4), m = +d.slice(5, 7) - 1 + n, day = dom ?? +d.slice(8, 10), last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
   return dIso(Date.UTC(y, m, Math.min(day, last)));
 }
 function planSchedule(total) {
@@ -577,9 +644,21 @@ function planSchedule(total) {
   if (span < 7 * (n - 1)) return null;
   const base = Math.floor(total / n), first = total - base * (n - 1), monthly = addMonthsIso(start, n - 1) <= p.finalDate;
   const out = [{ due: start, cents: first }];
+  // The family's day of the month for payments 2 onward (only when the plan is monthly).
+  const day = dayFor();
+  if (day && monthly) { for (let k = 1; k < n; k++) out.push({ due: addMonthsIso(start, k, day), cents: base }); return out; }
   for (let k = 1; k < n; k++) out.push({ due: monthly ? addMonthsIso(start, k) : dIso(dUtc(start) + Math.round((span * k) / (n - 1)) * 864e5), cents: base });
   return out;
 }
+/** The payment day in effect: theirs if it still fits, else today's day of the month (or the latest that fits). */
+function dayFor() {
+  const days = C.plan?.payDays || [];
+  if (!days.length) return null;
+  if (payDay && days.includes(payDay)) return payDay;
+  const t = +C.plan.today.slice(8, 10);
+  return days.includes(t) ? t : days[days.length - 1];
+}
+const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
 const shortDate = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
 /* ---------- summary ---------- */
@@ -613,7 +692,8 @@ function renderSummary() {
     const html = `<legend>How would you like to pay?</legend>
       <label><input type="radio" name="payplan" value="full" ${payPlan ? '' : 'checked'}> <span><b>Pay in full — ${money(total)}</b></span></label>
       <label><input type="radio" name="payplan" value="plan" ${payPlan ? 'checked' : ''}> <span><b>${sched.length} payments of ${same ? money(rest[0].cents) : 'about ' + money(rest[0].cents)}</b> — no interest, no fees
-        <span class="sub">${money(sched[0].cents)} today, then ${rest.map((x) => `${money(x.cents)} on ${shortDate(x.due)}`).join(', ')}. Charged automatically to the card you use today; we’ll email a reminder before each one.</span></span></label>`;
+        <span class="sub">${money(sched[0].cents)} today, then ${rest.map((x) => `${money(x.cents)} on ${shortDate(x.due)}`).join(', ')}. Charged automatically to the card you use today; we’ll email a reminder before each one.</span></span></label>
+      ${payPlan && C.plan.payDays?.length ? `<label class="payday"><span>Charge the later payments on the</span><select id="payDay" aria-label="Day of the month for payments 2 to ${sched.length}">${C.plan.payDays.map((d) => `<option value="${d}" ${d === dayFor() ? 'selected' : ''}>${ordinal(d)}</option>`).join('')}</select><span>of each month</span></label>` : ''}`;
     if ($('payChoice').dataset.html !== html) { $('payChoice').innerHTML = html; $('payChoice').dataset.html = html; } // don't rebuild under a click
   }
   const now = payPlan && sched ? sched[0].cents : total;
@@ -694,7 +774,7 @@ async function showDone() {
   }
   $('familyQs').innerHTML = fam.map((q) => questionHtml(q, `fq-${q.id}`, draft?.answers?.[q.id])).join('');
   if (draft?.guardian) for (const [k, v] of Object.entries({ gFirst: 'firstName', gLast: 'lastName', gEmail: 'email', gPhone: 'phone', gAddress: 'address', gCity: 'city', gState: 'state', gZip: 'zip' })) $('form').elements[k].value = draft.guardian[v] || '';
-  payPlan = !!draft?.plan;
+  payPlan = !!draft?.plan; payDay = draft?.payDay || null;
   (draft?.players?.length ? draft.players : [{}]).forEach((p) => playerCard(p));
   renderSummary();
   if (cards().length > 1) openCard(cards().find((sec) => sec._need?.length) || null);
@@ -719,6 +799,8 @@ async function showDone() {
     if (e.target.closest('[data-toggle]')) { openCard(sec.classList.contains('open') ? null : sec); return; }
     // "Answer" / "Not Eli? Change" / "Change": ask the returning-player question again.
     if (e.target.closest('[data-askret]')) { askReturning(sec); return; }
+    if (e.target.closest('[data-editid]')) { sec._editId = !sec._editId; drawReturning(sec); applyIdState(sec); if (sec._editId) sec.querySelector('[name=first]').focus(); return; }
+    if (e.target.closest('[data-alldiv]')) { sec._allDiv = true; renderPlayer(sec); renderSummary(); return; }
     if (e.target.matches('[data-done]')) {
       renderSummary();
       if (sec._need.length) { sec.querySelector('.pmissing').textContent = `Still needed: ${sec._need.join(', ')}.`; showMissing(sec); return; }
@@ -747,13 +829,14 @@ async function showDone() {
     const pick = all.filter((x, i) => !x.registered && !onForm(x) && all.findIndex((y) => y.kidId === x.kidId) === i && (add.dataset.addsib === '*' || x.kidId === add.dataset.addsib));
     let last;
     // Their details come from last season's roster, so they're already confirmed as the returning player.
-    for (const x of pick) last = playerCard({ firstName: x.firstName, lastName: x.lastName, birthdate: x.birthdate, returning: x.kidId });
+    for (const x of pick) last = playerCard({ firstName: x.firstName, lastName: x.lastName, birthdate: x.birthdate, gender: x.gender, returning: x.kidId });
     redrawSiblings(); renderSummary();
     last?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
   $('players').addEventListener('change', (e) => {
     const sec = e.target.closest('.player');
     if (e.target.matches('[name=dob],[data-program],[name=first]')) renderPlayer(sec);
+    if (e.target.matches('[data-gender]') && matchOf(sec)) drawReturning(sec);
     if (e.target.matches('[name=first],[name=last],[name=dob]')) lookupReturning(sec);
     if (e.target.matches('[name^="returning-"]')) {
       sec._returning = e.target.value;
@@ -785,12 +868,14 @@ async function showDone() {
   $('famPanel').addEventListener('change', (e) => { const m = /^fk-(.+)$/.exec(e.target.name || ''); if (m) { FAM.pick[m[1]] = e.target.value; drawFam(); } });
   $('famPanel').addEventListener('keydown', (e) => { if (e.target.id === 'famCode' && e.key === 'Enter') { e.preventDefault(); famAction('verify'); } });
   $('famPanel').addEventListener('input', (e) => { if (e.target.id === 'famCode' && e.target.value.replace(/\D/g, '').length === 6) famAction('verify'); });
-  $('form').addEventListener('input', (e) => { if (e.target.name === 'payplan') payPlan = e.target.value === 'plan'; renderSummary(); });
+  $('form').addEventListener('input', (e) => { if (e.target.name === 'payplan') payPlan = e.target.value === 'plan'; if (e.target.id === 'payDay') payDay = +e.target.value; renderSummary(); });
   $('form').onsubmit = async (e) => {
     e.preventDefault();
     $('err').textContent = '';
     const unsure = [...document.querySelectorAll('.player')].find((sec) => sec._matches?.length && !sec._returning);
     if (unsure) { $('err').textContent = `${unsure.querySelector('[name=first]').value.trim() || 'A player'}: tell us whether this is the player who played in ${C.campaign.year - 1}.`; askReturning(unsure); return; }
+    renderSummary();
+    if (goToMissing()) return;
     $('submit').disabled = true;
     try {
       const r = await call('POST', `/api/register/${encodeURIComponent(slug)}/checkout`, readForm());

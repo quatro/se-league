@@ -3,19 +3,15 @@
    Coach (from being named on a team; shown here, set on Divisions & teams). Shares helpers with app.js. */
 'use strict';
 
-const US = { list: [], mail: false, loaded: false };
+const US = { list: [], mail: false, links: false, loaded: false };
 
 async function loadUsers() {
   US.loaded = true;
-  try { const r = await call('GET', '/api/admin/users'); US.list = r.users; US.mail = r.mail; renderUsers(); }
+  try { const r = await call('GET', '/api/admin/users'); US.list = r.users; US.mail = r.mail; US.links = !!r.canSendLinks; renderUsers(); }
   catch (e) { toast(e.message, true); }
 }
 
 function renderUsers() {
-  const note = $('uMailNote');
-  note.hidden = US.mail;
-  note.textContent = 'Email isn’t set up yet, so nothing will be sent — use “Copy link” in the list and send it to them yourself.';
-  $('uInvite').closest('label').hidden = !US.mail;
   const me = S.me.user.email;
   $('userTable').innerHTML = '<tr><th>Person</th><th>Admin</th><th>Board</th><th>Coach</th><th>Last sign-in (UTC)</th><th></th></tr>'
     + (US.list.length ? '' : '<tr><td colspan="6" class="note">Nobody yet.</td></tr>')
@@ -28,15 +24,35 @@ function renderUsers() {
       <td><label class="hat"><input type="checkbox" data-uboard ${u.board || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled title="Admins already see everything"' : ''}> Board</label></td>
       <td>${latest.length ? latest.map((c) => `<span class="chip">${esc(c.name)} · ${esc(c.division)} ${esc(c.season_id)}</span>`).join(' ') : '<span class="sub">—</span>'}</td>
       <td class="sub">${esc(u.last_login_at || 'Never')}</td>
-      <td class="row" style="flex-wrap:nowrap">${US.mail ? '<button class="mini" data-uemail>Email link</button>' : ''}<button class="mini" data-ucopy>Copy link</button>${u.email === me ? '' : '<button class="mini" data-uremove>Remove</button>'}</td></tr>`;
+      <td class="row" style="flex-wrap:nowrap">${US.links && US.mail ? '<button class="mini" data-uemail>Email link</button>' : ''}${US.links ? '<button class="mini" data-ucopy>Copy link</button>' : ''}${u.email === me ? '' : '<button class="mini" data-uremove>Remove</button>'}</td></tr>`;
     }).join('');
 }
 
-$('userAdd').onsubmit = async (e) => {
-  e.preventDefault();
-  const body = { email: $('uEmail').value, name: $('uName').value, role: $('uRole').value, board: $('uBoard').checked, invite: US.mail && $('uInvite').checked };
-  if (await act('POST', '/api/admin/users', body)) { $('uEmail').value = ''; $('uName').value = ''; $('uBoard').checked = false; loadUsers(); }
-};
+/** Add someone: a dialog, so the page stays about the people already on the list. */
+function addUserDialog() {
+  const invite = US.links && US.mail;
+  const note = !US.links ? 'Once added, they sign in from the sign-in page with their email. Only the league’s sign-in owner can send links to other people.'
+    : !US.mail ? 'Email isn’t set up yet, so nothing is sent — use “Copy link” in the list and send it to them yourself.' : '';
+  openDialog(`<form class="dlg dvdlg" id="uaf"><h2>Add someone</h2>
+    ${dfld('Email', '<input type="email" name="email" required autocomplete="off" autofocus>')}
+    ${dfld('Name', '<input type="text" name="name" autocomplete="off" placeholder="Optional">')}
+    ${dfld('Access', '<select name="role"><option value="user">Member — seat counts, draft boards (and their team, if they coach)</option><option value="admin">Admin — sees and changes everything</option></select>')}
+    <label class="chk"><input type="checkbox" name="board"> <span><b>Board of Directors</b> <small>Sees every season page, changes nothing.</small></span></label>
+    ${invite ? '<label class="chk"><input type="checkbox" name="invite" checked> <span><b>Email them a sign-in link now</b></span></label>' : ''}
+    ${note ? `<p class="note" style="margin:0">${note}</p>` : ''}
+    <p class="err-text" id="uaErr"></p>
+    <div class="row dlgfoot"><button class="btn primary" type="submit">Add</button><button class="btn" data-close>Cancel</button></div>
+  </form>`, (d) => {
+    const f = d.querySelector('form');
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const el = f.elements;
+      const body = { email: el.email.value, name: el.name.value, role: el.role.value, board: el.board.checked, invite: invite && !!el.invite?.checked };
+      if (await act('POST', '/api/admin/users', body)) { d.close(); loadUsers(); }
+    };
+  });
+}
+$('userAddBtn').onclick = addUserDialog;
 
 $('userTable').onchange = async (e) => {
   const tr = e.target.closest('[data-uid]'); if (!tr) return;

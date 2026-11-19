@@ -50,6 +50,15 @@ test('schedule: monthly when it fits, else evenly spaced; odd cents on the first
   assert.equal(P.planSchedule(20500, 4, '2026-11-25', '2026-11-20'), null, 'less than a week between payments: no plan')
 })
 
+test('schedule: the family picks the day of the month for the later payments', () => {
+  assert.deepEqual(P.planSchedule(22500, 3, '2027-01-18', '2026-11-18', 1), [
+    { due: '2026-11-18', cents: 7500 }, { due: '2026-12-01', cents: 7500 }, { due: '2027-01-01', cents: 7500 }])
+  assert.equal(P.planSchedule(22500, 3, '2027-01-18', '2026-11-18', 20), null, 'the last payment would land after the final date')
+  assert.deepEqual(P.payDays(3, '2027-01-18', '2026-11-18'), Array.from({ length: 18 }, (_, i) => i + 1))
+  assert.deepEqual(P.payDays(3, '2027-03-01', '2026-11-18').length, 28)
+  assert.deepEqual(P.payDays(3, '2026-12-20', '2026-11-20'), [], 'not monthly: no day to pick')
+})
+
 let cid = ''
 let orderId = ''
 test('checkout with a plan: first payment now, card saved, rest scheduled', async () => {

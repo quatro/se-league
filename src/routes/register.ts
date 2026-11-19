@@ -135,6 +135,7 @@ const checkoutBody = z.object({
     returning: z.string().max(40).optional(), tryout: z.boolean().optional(),
   })).max(8),
   plan: z.boolean().optional(),
+  payDay: z.number().int().min(1).max(28).optional(),
 })
 register.post('/api/register/:slug/checkout', wrap(async (req, res) => {
   const key = `checkout:${req.ip}`

@@ -133,8 +133,10 @@ export function requireUser(req: Request, res: Response, next: NextFunction) {
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: 'login_required' })
-  // The Board of Directors sees every admin area but can't change anything.
-  if (!req.admin && !(req.board && req.method === 'GET')) return res.status(403).json({ error: req.board ? 'Board members can view but not change anything — ask an admin' : 'Admins only' })
+  // The Board of Directors sees the season's admin areas but can't change anything — and never the
+  // league-wide ones (users, settings, the SportsEngine feed, the activity log), which are admins' only.
+  const adminsOnly = /^\/api\/admin\/(users|registrations|audit|settings)\b/.test(req.originalUrl)
+  if (!req.admin && !(req.board && req.method === 'GET' && !adminsOnly)) return res.status(403).json({ error: req.board ? 'Board members can view but not change anything — ask an admin' : 'Admins only' })
   if (req.method !== 'GET') {
     const origin = req.headers.origin
     const host = req.headers['x-forwarded-host'] ?? req.headers.host

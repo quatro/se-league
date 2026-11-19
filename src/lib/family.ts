@@ -28,7 +28,7 @@ export function familyKids(c: Campaign, email: string) {
   const prior = db.prepare('SELECT id, year FROM seasons WHERE year = ?').get(s.year - 1) as { id: string; year: number } | undefined
   if (!prior) return []
   const progs = offerings(c.id).filter((o) => o.active && o.reg_mode !== 'closed')
-  const out: { kidId: string; firstName: string; lastName: string; birthdate: string; division: string | null; team: string | null; year: number; registered: boolean; notReturning: boolean }[] = []
+  const out: { kidId: string; firstName: string; lastName: string; birthdate: string; gender: string; division: string | null; team: string | null; year: number; registered: boolean; notReturning: boolean }[] = []
   for (const id of kidIdsFor(email)) {
     const r = db.prepare(`SELECT k.*, d.name AS division, t.name AS team FROM placements p JOIN kids k ON k.id = p.kid_id
       LEFT JOIN divisions d ON d.id = p.eff_division_id LEFT JOIN teams t ON t.id = p.eff_team_id
@@ -40,7 +40,7 @@ export function familyKids(c: Campaign, email: string) {
     const cur = c.season_id ? (db.prepare('SELECT status FROM enrollments WHERE season_id = ? AND kid_id = ?').get(c.season_id, id) as { status: string } | undefined) : undefined
     if (cur?.status === 'Withdrawn') continue
     const [firstName = '', ...rest] = r.name.trim().split(/\s+/)
-    out.push({ kidId: id, firstName, lastName: rest.join(' '), birthdate: r.birthdate ?? '', division: r.division, team: r.team, year: prior.year,
+    out.push({ kidId: id, firstName, lastName: rest.join(' '), birthdate: r.birthdate ?? '', gender: r.gender || '', division: r.division, team: r.team, year: prior.year,
       registered: cur?.status === 'Registered', notReturning: cur?.status === 'Not returning' })
   }
   return out.sort((a, b) => (a.birthdate || '9').localeCompare(b.birthdate || '9'))

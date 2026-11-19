@@ -15,6 +15,8 @@ export const config = {
   authDbPath: env.AUTH_DB_PATH || path.join(path.dirname(env.DB_PATH || path.join(ROOT, 'data', 'x.db')), 'auth.db'),
   // e.g. .crushworldseries.com, so logging into one league tool logs into all of them.
   cookieDomain: env.COOKIE_DOMAIN || '',
+  /** The only people who may hand someone else a sign-in link (copy, email, or invite on add). Empty = nobody (use `pnpm users`). */
+  linkSenders: (env.LINK_SENDERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
   leagueName: env.LEAGUE_NAME || 'SE Baseball',
   // For dates families read (a waitlist offer's pay-by deadline). The league is in Lexington, KY.
   timeZone: env.LEAGUE_TIME_ZONE || 'America/New_York',

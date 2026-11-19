@@ -1,5 +1,6 @@
 import { db } from '../db.js'
 import { slots, type EngineInput } from './engine.js'
+import { lastNotes } from './playernotes.js'
 import {
   ageIn, audit, changed, currentVersion, division, divisionTeams, draftFor, enrollment, mustSeason, refreshPools, season, team,
   UserError, type Draft, type Placement,
@@ -56,7 +57,7 @@ function blocked(r: Draft): string | null {
 }
 
 /** Shape sent to draft rooms. Notes are admin-only; a blind draft hides who is behind each number until it's picked. */
-export function draftState(id: string, isAdmin: boolean) {
+export function draftState(id: string, isAdmin: boolean, canSee = isAdmin) {
   const r = mustDraft(id)
   const s = mustSeason(r.season_id)
   const b = board(r)
@@ -67,16 +68,18 @@ export function draftState(id: string, isAdmin: boolean) {
   const kids = new Map((db.prepare(`SELECT k.id, k.name, k.birthdate FROM kids k JOIN enrollments e ON e.kid_id = k.id WHERE e.season_id = ?`).all(s.id) as { id: string; name: string; birthdate: string | null }[]).map((k) => [k.id, k]))
   const numbers = new Map((db.prepare('SELECT number, enrollment_id FROM blind_numbers WHERE draft_id = ?').all(r.id) as { number: number; enrollment_id: string }[]).map((n) => [n.enrollment_id, n.number]))
   const pickedIds = new Set(b.pk.map((p) => p.enrollment_id))
+  const notes = canSee ? lastNotes(s.id) : new Map()
+  const ck = coachKids(s.id, b.d.id)
   const prev = prevDraft(r), next = r.next_id ? draft(r.next_id) : undefined
   return {
-    version: currentVersion(), canWrite: isAdmin, serverNow: Date.now(),
+    version: currentVersion(), canWrite: isAdmin, canSee, serverNow: Date.now(),
     season: { id: s.id, year: s.year },
     draft: {
       id: r.id, key: r.key, divisionId: b.d.id, name: b.d.name, format: r.format, status: r.status, mode: r.mode, swap: JSON.parse(r.swap), rosterSize: b.d.roster_size,
       blocked: blocked(r), prev: prev ? division(prev.division_id)?.name ?? prev.key : null, next: next ? division(next.division_id)?.name ?? next.key : null,
     },
     clock: { clockStart: r.clock_start, startedAt: r.started_at },
-    teams: b.ts.map(({ id, name, color, fg, wins, losses, ties }) => ({ id, name, color, fg, record: wins != null && losses != null ? `${wins}–${losses}${ties ? `–${ties}` : ''}` : null })),
+    teams: b.ts.map(({ id, name, color, fg, wins, losses, ties, coach }) => ({ id, name, color, fg, coach: coach || '', record: wins != null && losses != null ? `${wins}–${losses}${ties ? `–${ties}` : ''}` : null })),
     players: [...seen.values()].map((p) => {
       const k = kids.get(p.kid_id)
       const kind = b.keepers.some((x) => x.id === p.id) ? 'returning' : 'pool'
@@ -90,10 +93,14 @@ export function draftState(id: string, isAdmin: boolean) {
           return t && t.division_id !== b.d.id ? { from: { division: division(t.division_id)?.name ?? '', team: t.name, assumed: p.status !== 'Registered' } } : {}
         })() : {}),
         ...(hide ? { name: null, age: null, status: null, rank: null, hidden: true } : {
+          ...(ck.get(p.kid_id) ? { coachOf: ck.get(p.kid_id) } : {}),
+          // How committed the family is, shown on the name for everyone: registered, or the family itself said they're coming back.
+          commit: p.status === 'Registered' ? 'reg' : (p as { intent?: string | null }).intent === 'yes' && (p as { intent_by?: string | null }).intent_by === 'family' && !OUT.includes(p.status) ? 'yes' : null,
           name: k?.name ?? '?', age: ageIn(s, k?.birthdate ?? null, p.age), status: p.status, rank: p.rank, tryout: !!p.tryout, prior: p.prior,
           // A younger player trying out from their own division (a 9 from the 9-Year-Old League): drafted up, or back home — never into Minors.
           ...(kind === 'pool' && p.tryout && p.division_id && p.division_id !== b.d.id && !division(p.division_id)?.group_key ? { playingUp: division(p.division_id)?.name ?? '' } : {}),
-          ...(isAdmin ? { notes: p.notes } : {}),
+          // The league's own view: notes, the family's answer, and the latest draft-room note (admins and the Board).
+          ...(canSee ? { notes: p.notes, intent: (p as { intent?: string | null }).intent ?? null, intentBy: (p as { intent_by?: string | null }).intent_by ?? null, lastNote: notes.get(p.kid_id) ?? null } : {}),
         }),
       }
     }),
@@ -102,6 +109,30 @@ export function draftState(id: string, isAdmin: boolean) {
     current: b.current, orphans: b.orphans.map((p) => p.slot_key),
     unnumbered: r.format === 'blind' ? pool.filter((p) => !numbers.has(p.id) && !OUT.includes(p.status)).length : 0,
   }
+}
+
+/** Kids whose parent coaches a team this season: a parent contact with the coach's email or exact name is sure;
+    the same last name alone is only a "possible". Teams in this draft's division win over other divisions. */
+function coachKids(seasonId: string, divisionId: string) {
+  const norm = (x: string) => (x || '').toLowerCase().replace(/[^a-z ]/g, '').replace(/\s+/g, ' ').trim()
+  const ts = db.prepare(`SELECT t.id, t.name, t.coach, t.coach_email, t.division_id, d.name AS dname FROM teams t JOIN divisions d ON d.id = t.division_id
+    WHERE t.season_id = ? AND (t.coach <> '' OR t.coach_email <> '')`).all(seasonId) as { id: string; name: string; coach: string; coach_email: string; division_id: string; dname: string }[]
+  const out = new Map<string, { teamId: string; team: string; division: string; coach: string; sure: boolean; here: boolean }>()
+  if (!ts.length) return out
+  const contacts = db.prepare(`SELECT c.kid_id, c.email, c.name FROM contacts c JOIN enrollments e ON e.kid_id = c.kid_id AND e.season_id = ?`).all(seasonId) as { kid_id: string; email: string; name: string }[]
+  const kidsIn = db.prepare(`SELECT k.id, k.name FROM kids k JOIN enrollments e ON e.kid_id = k.id AND e.season_id = ?`).all(seasonId) as { id: string; name: string }[]
+  const put = (kidId: string, t: (typeof ts)[number], sure: boolean) => {
+    const cur = out.get(kidId), here = t.division_id === divisionId, score = (x: { sure: boolean; here: boolean }) => (x.sure ? 2 : 0) + (x.here ? 1 : 0)
+    if (cur && score(cur) >= score({ sure, here })) return
+    out.set(kidId, { teamId: t.id, team: t.name, division: t.dname, coach: t.coach || t.coach_email, sure, here })
+  }
+  for (const t of ts) {
+    const email = t.coach_email.toLowerCase(), name = norm(t.coach)
+    for (const c of contacts) if ((email && c.email.toLowerCase() === email) || (name && norm(c.name) === name)) put(c.kid_id, t, true)
+    const last = name.split(' ').pop()
+    if (last) for (const k of kidsIn) if (norm(k.name).split(' ').pop() === last) put(k.id, t, false)
+  }
+  return out
 }
 
 function touch(r: Draft, patch: Partial<Pick<Draft, 'clock_start' | 'started_at'>>) {

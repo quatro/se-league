@@ -15,7 +15,7 @@ const cvQ = (extra = {}) => new URLSearchParams({ season: CV.v?.season.id || S.s
 async function loadCoach() {
   const coaches = isAdmin() ? [...new Map(S.st.teams.filter((t) => t.coach_email).map((t) => [t.coach_email, t])).values()] : [];
   if (isAdmin()) {
-    if (!coaches.length) { $('coachAs').innerHTML = ''; $('coachSub').textContent = ''; $('coachBody').innerHTML = '<p class="note">No coaches yet. Add a coach’s name and email to a team under <b>Seasons → Divisions &amp; teams</b>; they’ll see this page when they sign in.</p>'; return; }
+    if (!coaches.length) { $('coachAs').innerHTML = ''; $('coachSub').textContent = ''; $('coachBody').innerHTML = '<p class="note">No coaches yet. Add a coach’s name and email to a team under <b>Season → Divisions &amp; teams</b>; they’ll see this page when they sign in.</p>'; return; }
     if (!coaches.some((t) => t.coach_email === CV.as)) CV.as = (coaches.find((t) => t.coach_email === S.me.user.email) || coaches[0]).coach_email;
     $('coachAs').innerHTML = `<label class="row" style="gap:8px"><span class="sub">See it as</span><select id="coachPick">${coaches.map((t) => `<option value="${esc(t.coach_email)}" ${t.coach_email === CV.as ? 'selected' : ''}>${esc(t.coach || t.coach_email)} · ${esc(t.name)}</option>`).join('')}</select></label>`;
     $('coachPick').onchange = (e) => { CV.as = e.target.value; loadCoach(); };

@@ -11,8 +11,12 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmt = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
 const dotCls = (s) => ({ Registered: 'Registered', Expected: 'Expected', 'Need to contact': 'Need', 'Not returning': 'Not-returning', Withdrawn: 'Withdrawn', Waitlist: 'Waitlist' }[s] || '');
 const isAdmin = () => !!S.st?.canWrite;
+const canSee = () => !!S.st?.canSee; // admins and the Board see notes and the player sheet
 const now = () => Date.now() + S.skew;
 const OUT = ['Not returning', 'Withdrawn'];
+// Green on the name: light = the family said they're coming back, bold = registered. Not returning keeps the strike-through.
+const cmCls = (p) => (p?.commit ? ` cm-${p.commit}` : '');
+const cmTip = (p) => (p?.commit === 'reg' ? 'Registered' : p?.commit === 'yes' ? 'Family says coming back' : '');
 const A = (path) => `/api/admin/drafts/${encodeURIComponent(S.id)}${path}`;
 
 function toast(m, err) { const t = $('toast'); t.textContent = m; t.className = 'toast' + (err ? ' err' : ''); t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), err ? 4500 : 2600); }
@@ -54,7 +58,8 @@ function render() {
   renderBlocked();
   renderClock();
   renderOrphans();
-  if (S.tab === 'board') { renderBoard(); renderPool(); }
+  $('reviewBtn').hidden = !canSee() || blind();
+  if (S.tab === 'board') { renderBoard(); renderPool(); renderCoachKids(); }
   if (S.tab === 'teams') renderTeams();
   const ae = document.activeElement;
   const typing = ae?.closest?.('section') && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'checkbox';
@@ -117,7 +122,7 @@ function renderBoard() {
   const st = S.st, teams = st.teams, pm = pickMap(), cur = st.current;
   const rounds = Math.max(st.maxRound, 1);
   const byKey = Object.fromEntries(st.slots.map((s) => [s.key, s]));
-  let h = `<thead><tr><th class="rd">Round</th>${teams.map((t) => `<th style="${hdrStyle(t)}">${esc(t.name)}${t.record ? `<div style="font-size:.7rem;font-weight:600;opacity:.85">${esc(t.record)}</div>` : ''}</th>`).join('')}</tr></thead><tbody>`;
+  let h = `<thead><tr><th class="rd">Round</th>${teams.map((t) => `<th style="${hdrStyle(t)}">${esc(t.name)}<div class="thcoach" title="Head coach">${t.coach ? esc(t.coach) : '<i>No coach yet</i>'}</div>${t.record ? `<div style="font-size:.7rem;font-weight:600;opacity:.85">${esc(t.record)}</div>` : ''}</th>`).join('')}</tr></thead><tbody>`;
   for (let r = 1; r <= rounds; r++) {
     const comp = r > st.minRound;
     h += `<tr><th class="rd">Rd ${r}${comp ? '<br><span class="chip comp">Comp</span>' : ''}</th>`;
@@ -127,7 +132,8 @@ function renderBoard() {
       const p = pm[s.key];
       if (p) {
         const pl = player(p.player);
-        h += `<td class="picked${isAdmin() ? ' editable' : ''}" ${isAdmin() ? `data-slot="${esc(s.key)}" title="Edit this pick"` : ''}><span class="nm">${esc(label(pl))}</span>${pl?.age ? ` <span class="ag">(${esc(pl.age)})</span>` : ''}<span class="pk">#${s.n}${pl?.number ? ` · no. ${pl.number}` : ''}${p.sibling ? ' · sibling pick' : ''}</span>${p.took != null ? `<span class="tk" title="Time on the clock">${fmt(p.took)}</span>` : ''}</td>`;
+        const ckc = pl?.coachOf ? ckCheck(pl) : null;
+        h += `<td class="picked${isAdmin() ? ' editable' : ''}${ckc ? ` ck ck-${ckc.cls}` : ''}" ${isAdmin() ? `data-slot="${esc(s.key)}" title="${ckc ? `${esc(ckc.text)} — ` : ''}Edit this pick"` : ckc ? `title="${esc(ckc.text)}"` : ''}>${ckc ? ckBadge(pl) : ''}<span class="nm${cmCls(pl)}"${cmTip(pl) ? ` title="${cmTip(pl)}"` : ''}>${esc(label(pl))}</span>${pl?.age ? ` <span class="ag">(${esc(pl.age)})</span>` : ''}<span class="pk">#${s.n}${pl?.number ? ` · no. ${pl.number}` : ''}${p.sibling ? ' · sibling pick' : ''}</span>${p.took != null ? `<span class="tk" title="Time on the clock">${fmt(p.took)}</span>` : ''}</td>`;
       } else if (cur && cur.key === s.key) h += `<td class="onclock">On the clock<span class="pk" style="color:inherit">#${s.n}</span></td>`;
       else h += `<td class="next">#${s.n}</td>`;
     }
@@ -141,11 +147,42 @@ function renderBoard() {
   h += '</tbody>';
   if (teams.some((t) => keepers(t.id).length)) {
     h += `<tbody class="keep"><tr><th class="rd">Returning</th>${teams.map((t) => `<td>${keepers(t.id).sort((a, b) => (b.age ?? 0) - (a.age ?? 0) || a.name.localeCompare(b.name))
-      .map((p) => `<div class="kp ${OUT.includes(p.status) ? 'gone' : ''}" title="${esc(p.status)}"><i class="dot ${dotCls(p.status)}"></i>${esc(p.name)}${p.age ? ` (${esc(p.age)})` : ''}</div>`).join('')}</td>`).join('')}</tr></tbody>`;
+      .map((p) => `<div class="kp ${OUT.includes(p.status) ? 'gone' : ''}${p.coachOf ? ` ck ck-${ckCheck(p).cls}` : ''}" title="${p.coachOf ? `${esc(ckCheck(p).text)} · ` : ''}"${esc(p.status)}${p.lastNote ? ` — “${esc(p.lastNote.text)}”` : ''}"><i class="dot ${dotCls(p.status)}"></i><span class="kn"><span class="${cmCls(p).trim()}">${canSee() ? `<button class="plink" data-psheet="${esc(p.id)}">${esc(p.name)}</button>` : esc(p.name)}</span>${p.age ? ` <span class="ag">(${esc(p.age)})</span>` : ''}${p.coachOf ? ` ${ckBadge(p)}` : ''}${p.lastNote ? ' <span class="pn" aria-label="has notes">✎</span>' : ''}</span></div>`).join('')}</td>`).join('')}</tr></tbody>`;
   }
   $('board').innerHTML = h;
 }
-$('board').onclick = (e) => { const td = e.target.closest('[data-slot]'); if (td && isAdmin()) editPick(td.dataset.slot); };
+$('board').onclick = (e) => {
+  const ps = e.target.closest('[data-psheet]'); if (ps) return openSheet(ps.dataset.psheet);
+  const td = e.target.closest('[data-slot]'); if (td && isAdmin()) editPick(td.dataset.slot);
+};
+
+/* ---------- coaches' kids: badge them everywhere, and check each is where they belong ---------- */
+const ckBadge = (p) => `<span class="ckb${p.coachOf.sure ? '' : ' maybe'}" title="${esc(p.coachOf.sure ? `Coach ${p.coachOf.coach}'s kid (${p.coachOf.team})` : `Possibly Coach ${p.coachOf.coach}'s kid — same last name`)}" aria-label="Coach's kid">C</span>`;
+function ckCheck(p) {
+  const c = p.coachOf, pick = S.st.picks.find((x) => x.player === p.id);
+  const on = p.kind === 'returning' ? p.teamId : pick?.team;
+  const parent = `${c.sure ? '' : 'Possibly '}Coach ${c.coach}'s kid`;
+  if (OUT.includes(p.status)) return { cls: 'info', text: `${parent} · ${p.status}` };
+  if (!c.here) return { cls: 'info', text: `${parent} · coaches ${c.team} (${c.division})` };
+  if (on === c.teamId) return { cls: 'ok', text: `${parent} · on ${c.team} — ${p.kind === 'returning' ? 'returning' : `round ${pick.round}, pick #${pick.n}${pick.sibling ? ' (sibling pick)' : ''}`}` };
+  if (on) return { cls: 'bad', text: `${parent} · on ${team(on)?.name} — parent coaches ${c.team}` };
+  return { cls: c.sure ? 'warn' : 'info', text: `${parent} · not on ${c.team} yet${c.sure ? ' — add a sibling pick' : ''}` };
+}
+function renderCoachKids() {
+  const box = $('ckBar'), list = S.st.players.filter((p) => p.coachOf && !p.hidden && p.coachOf.here)
+    .sort((a, b) => a.coachOf.team.localeCompare(b.coachOf.team) || a.name.localeCompare(b.name));
+  box.hidden = !list.length;
+  if (!list.length) return;
+  const rows = list.map((p) => ({ p, c: ckCheck(p) }));
+  const need = rows.filter((r) => r.c.cls === 'warn' || r.c.cls === 'bad').length;
+  const open = box.querySelector('details')?.open ?? need > 0;
+  box.innerHTML = `<details ${open ? 'open' : ''}><summary><span class="ckb">C</span> <b>Coaches’ kids</b> <span class="sub">${list.length} in this draft</span>
+      ${need ? `<span class="ckneed">${need} to check</span>` : '<span class="ckok">all on their parent’s team</span>'}</summary>
+    <ul>${rows.map(({ p, c }) => `<li class="ck-${c.cls}"><i aria-hidden="true">${c.cls === 'ok' ? '✓' : c.cls === 'bad' ? '✕' : c.cls === 'warn' ? '!' : '·'}</i>
+      ${canSee() ? `<button class="plink" data-psheet="${esc(p.id)}">${esc(p.name)}</button>` : esc(p.name)}${p.age ? ` <span class="sub">(${esc(p.age)})</span>` : ''}
+      <span class="sub">${esc(c.text.replace(/^(Possibly )?Coach [^·]*· /, '').replace(/^on /, ''))}${p.coachOf.sure ? '' : ' · possible — same last name as the coach'}</span></li>`).join('')}</ul></details>`;
+}
+$('ckBar').onclick = (e) => { const ps = e.target.closest('[data-psheet]'); if (ps) openSheet(ps.dataset.psheet); };
 
 function poolPlayers() { return S.st.players.filter((p) => p.kind === 'pool'); }
 function renderPool() {
@@ -187,13 +224,14 @@ function renderPool() {
   $('pool').innerHTML = list.map((p) => {
     const tk = taken.has(p.id), by = tk ? team(st.picks.find((x) => x.player === p.id).team)?.name : '';
     const out = OUT.includes(p.status);
-    return `<li class="${tk || out ? 'taken' : ''}"><div><div class="nm kp ${out ? 'gone' : ''}" title="${esc(p.status)}"><i class="dot ${dotCls(p.status)}"></i>${p.rank != null ? `<span class="sub">${esc(p.rank)}.</span> ` : ''}${esc(p.name)}</div>
-      <div class="sub">${esc(p.status)}${p.age ? ` · Age ${esc(p.age)}` : ''}${p.prior ? ` · ${esc(p.prior)}` : ''}${p.playingUp && !tk ? ` · <b>playing up from the ${esc(p.playingUp)}</b>` : ''}${p.from && !tk ? ` · <b>trying out${p.from.assumed ? ' (assumed — hasn’t registered yet)' : ''}</b>` : ''}${p.notes ? ` · ${esc(p.notes)}` : ''}${tk ? ` · ${esc(by)}` : ''}</div></div>
+    return `<li class="${tk || out ? 'taken' : ''}${p.coachOf ? ` ckrow${p.coachOf.sure ? '' : ' maybe'}` : ''}"><div><div class="nm kp ${out ? 'gone' : ''}" title="${esc(cmTip(p) || p.status)}"><i class="dot ${dotCls(p.status)}"></i>${p.rank != null ? `<span class="sub">${esc(p.rank)}.</span> ` : ''}${p.coachOf ? ckBadge(p) : ''}<span class="${cmCls(p).trim()}">${canSee() ? `<button class="plink" data-psheet="${esc(p.id)}">${esc(p.name)}</button>` : esc(p.name)}</span></div>
+      <div class="sub">${esc(p.status)}${p.age ? ` · Age ${esc(p.age)}` : ''}${p.prior ? ` · ${esc(p.prior)}` : ''}${p.playingUp && !tk ? ` · <b>playing up from the ${esc(p.playingUp)}</b>` : ''}${p.from && !tk ? ` · <b>trying out${p.from.assumed ? ' (assumed — hasn’t registered yet)' : ''}</b>` : ''}${p.notes ? ` · ${esc(p.notes)}` : ''}${tk ? ` · ${esc(by)}` : ''}</div>${p.coachOf ? `<div class="cknote ck-${ckCheck(p).cls}">${esc(ckCheck(p).text)}</div>` : ''}${p.lastNote ? `<div class="pnote">“${esc(p.lastNote.text)}” <span>— ${esc(who(p.lastNote.by))}, ${esc(when(p.lastNote.at))}</span></div>` : ''}</div>
       ${!tk && !out && canPick ? `<button class="btn primary" data-draft="${esc(p.id)}" title="Draft to ${esc(t.name)}">Draft</button>` : ''}</li>`;
   }).join('');
 }
 $('poolSearch').oninput = $('poolAge').onchange = $('poolFrom').onchange = $('showTaken').onchange = () => S.st && renderPool();
 $('pool').onclick = async (e) => {
+  const ps = e.target.closest('[data-psheet]'); if (ps) return openSheet(ps.dataset.psheet);
   const b = e.target.closest('[data-draft]'); if (!b) return;
   b.disabled = true;
   await act('POST', A('/pick'), { playerId: b.dataset.draft });
@@ -211,15 +249,15 @@ function renderTeams() {
   $('teams').innerHTML = st.teams.map((t) => {
     const ks = keepers(t.id).filter((p) => !OUT.includes(p.status));
     const ps = st.picks.filter((p) => p.team === t.id).sort((a, b) => a.n - b.n);
-    return `<div class="team"><div class="bar" style="${hdrStyle(t)};${t.color.toUpperCase() === '#FFFFFF' ? 'border-bottom:1px solid var(--line)' : ''}"><span>${esc(t.name)}</span><span>${ks.length + ps.length}/${st.draft.rosterSize}</span></div><ol>
-      ${ks.map((p) => `<li><i class="dot ${dotCls(p.status)}" title="${esc(p.status)}"></i> ${esc(p.name)}${p.age ? ` (${esc(p.age)})` : ''}<span class="tag">returning</span></li>`).join('')}
-      ${ps.map((p) => { const pl = player(p.player); return `<li><i class="dot ${dotCls(pl?.status)}" title="${esc(pl?.status)}"></i> ${esc(label(pl))}${pl?.age ? ` (${esc(pl.age)})` : ''}<span class="tag">Rd ${p.round} · #${p.n}</span></li>`; }).join('')}</ol></div>`;
+    return `<div class="team"><div class="bar" style="${hdrStyle(t)};${t.color.toUpperCase() === '#FFFFFF' ? 'border-bottom:1px solid var(--line)' : ''}"><span>${esc(t.name)}${t.coach ? `<small class="tcoach">Coach ${esc(t.coach)}</small>` : ''}</span><span>${ks.length + ps.length}/${st.draft.rosterSize}</span></div><ol>
+      ${ks.map((p) => `<li><i class="dot ${dotCls(p.status)}" title="${esc(p.status)}"></i> <span class="${cmCls(p).trim()}">${esc(p.name)}</span>${p.age ? ` (${esc(p.age)})` : ''}<span class="tag">returning</span></li>`).join('')}
+      ${ps.map((p) => { const pl = player(p.player); return `<li><i class="dot ${dotCls(pl?.status)}" title="${esc(pl?.status)}"></i> <span class="${cmCls(pl).trim()}">${esc(label(pl))}</span>${pl?.age ? ` (${esc(pl.age)})` : ''}<span class="tag">Rd ${p.round} · #${p.n}</span></li>`; }).join('')}</ol></div>`;
   }).join('') || '<p class="note">No teams yet.</p>';
 }
 
 /* ---------- dialogs ---------- */
 function openDialog(html, bind) {
-  const d = $('dlg'); d.innerHTML = html; bind?.(d); d.showModal();
+  const d = $('dlg'); d.innerHTML = html; bind?.(d); if (!d.open) d.showModal();
   d.querySelectorAll('[data-close]').forEach((b) => (b.onclick = (e) => { e.preventDefault(); d.close(); }));
 }
 function editPick(key) {
@@ -237,6 +275,88 @@ function editPick(key) {
     d.querySelector('#doRemove').onclick = async () => { if (await act('DELETE', A(`/picks/${encodeURIComponent(key)}`), undefined, 'Pick removed')) d.close(); };
   });
 }
+
+/* ---------- player sheet: what's happening with one kid, and who said so ----------
+   Opens from any name on the board or in the pool. Previous / Next walk the whole
+   list (returners team by team, then the pool), so the room can go player by player. */
+const DECIDE = [['yes', 'Coming back', 'Expected'], ['unsure', 'Needs a call', 'Need to contact'], ['no', 'Not returning', 'Not returning']];
+const INTENT_WORD = { yes: 'Coming back', no: 'Not returning', unsure: 'Not sure yet' };
+const when = (at) => { const d = new Date(/Z$|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`); return isNaN(d) ? at : d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+const who = (a) => (a?.startsWith('family:') ? 'Family' : a?.startsWith('coach:') ? `Coach ${a.slice(6)}` : a === 'system' ? 'System' : a || '?');
+function sheetOrder() {
+  const st = S.st, pm = new Set(st.picks.map((x) => x.player));
+  const ret = st.teams.flatMap((t) => keepers(t.id).sort((a, b) => a.name.localeCompare(b.name)));
+  const pool = poolPlayers().filter((p) => !p.hidden && !pm.has(p.id)).sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || a.name.localeCompare(b.name));
+  const drafted = st.picks.slice().sort((a, b) => a.n - b.n).map((x) => player(x.player)).filter((p) => p && !p.hidden);
+  return [...ret, ...pool, ...drafted].map((p) => p.id);
+}
+// A decision also writes a status change at the same moment; show it once.
+const tidyHistory = (hs) => hs.filter((h) => !(h.action === 'enrollment_edited' && h.detail && Object.keys(h.detail).join() === 'status'
+  && hs.some((o) => o.action === 'interest_answered' && o.by === h.by && o.at === h.at)));
+function historyLine(h) {
+  const d = h.detail && typeof h.detail === 'object' ? h.detail : {};
+  switch (h.action) {
+    case 'player_note': return `<q>${esc(d.text)}</q>`;
+    case 'interest_answered': return h.by?.startsWith('family:') ? `Family answered <b>${esc(INTENT_WORD[d.answer] || d.answer)}</b>` : `Decision: <b>${esc(DECIDE.find((x) => x[0] === d.answer)?.[1] || d.answer)}</b>`;
+    case 'enrollment_edited': return Object.entries(d).map(([k, v]) => `${esc(k.replace(/_/g, ' '))}: ${esc(v?.from ?? '—')} → <b>${esc(v?.to ?? '—')}</b>`).join('<br>') || 'Edited';
+    default: {
+      const extra = Object.entries(d).filter(([, v]) => v != null && typeof v !== 'object').slice(0, 3).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(' · ');
+      return `${esc(h.action.replace(/_/g, ' '))}${extra ? ` <span class="sub">${extra}</span>` : typeof h.detail === 'string' && h.detail ? ` <span class="sub">${esc(h.detail)}</span>` : ''}`;
+    }
+  }
+}
+async function openSheet(id, data) {
+  const pl = player(id);
+  let x = data;
+  if (!x) { try { x = await call('GET', A(`/players/${encodeURIComponent(id)}`)); } catch (e) { return toast(e.message, true); } }
+  const order = sheetOrder(), i = order.indexOf(id), prev = order[i - 1], next = order[i + 1];
+  const pick = S.st.picks.find((p) => p.player === id);
+  const where = pick ? `Drafted by ${team(pick.team)?.name} · round ${pick.round}` : pl?.kind === 'returning' ? `Returning to ${team(pl.teamId)?.name ?? x.team ?? 'their team'}` : pl?.from ? `Trying out · goes back to ${pl.from.team} (${pl.from.division}) if not drafted` : 'In the draft pool';
+  const cur = DECIDE.find((d) => d[2] === x.status)?.[0];
+  const fam = x.intentBy === 'family' && x.intent;
+  const can = isAdmin(), reg = x.status === 'Registered';
+  const ago = x.intentAt ? when(x.intentAt) : '';
+  openDialog(`<form class="dlg psheet" method="dialog">
+    <div class="pshd"><div><h2>${esc(x.name)}</h2><div class="sub">${pl?.age ? `Age ${esc(pl.age)} · ` : ''}${esc(where)}${x.prior ? ` · ${esc(x.prior)}` : ''}</div></div>
+      <span class="chip ${reg ? 'good' : x.status === 'Not returning' || x.status === 'Withdrawn' ? 'bad' : x.status === 'Need to contact' ? 'meh' : ''}"><i class="dot ${dotCls(x.status)}"></i> ${esc(x.status)}</span></div>
+    ${reg ? '<p class="psans good"><b>Registered</b> — they’re in. Notes below still help the room.</p>'
+      : fam ? `<p class="psans fam"><b>The family answered: ${esc(INTENT_WORD[x.intent])}</b> <span class="sub">${esc(ago)} · only the family can change this</span></p>`
+      : x.intent ? `<p class="psans"><b>${esc(DECIDE.find((d) => d[0] === x.intent)?.[1])}</b> <span class="sub">— set by ${x.intentBy === 'coach' ? 'a coach' : 'the league'}${ago ? `, ${esc(ago)}` : ''}; no word from the family directly</span></p>`
+      : x.returner ? '<p class="psans muted">No answer from the family yet — “Expected” is the default for every returner.</p>' : ''}
+    ${can && !reg ? `<fieldset class="psdec"><legend>Decision</legend>${DECIDE.map(([v, l]) => `<label class="${v}"><input type="radio" name="decision" value="${v}" ${cur === v ? 'checked' : ''} ${fam && v !== x.intent ? 'disabled' : ''}><span>${l}</span></label>`).join('')}</fieldset>` : ''}
+    ${can ? `<label class="psnote"><span>What’s happening?</span><textarea name="note" rows="3" maxlength="1000" placeholder="e.g. Talked to Mom 11/17 — moving to Lexington in March, out for 2027."></textarea></label>` : ''}
+    ${x.contacts.length ? `<div class="pscon">${x.contacts.map((c) => `<div><b>${esc(c.name || 'Parent')}</b>${c.relation ? ` <span class="sub">${esc(c.relation)}</span>` : ''}${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a> · <a href="sms:${esc(c.phone)}">text</a>` : ''}</div>`).join('')}</div>` : '<p class="note">No parent contact on file.</p>'}
+    <details class="pshist" open><summary>History <span class="sub">${tidyHistory(x.history).length} ${tidyHistory(x.history).length === 1 ? 'entry' : 'entries'} · ${x.season.year}</span></summary>
+      ${x.history.length ? `<ol>${tidyHistory(x.history).map((h) => `<li class="${h.action === 'player_note' ? 'isnote' : ''}"><div class="psw"><b>${esc(who(h.by))}</b> · ${esc(when(h.at))}</div><div>${historyLine(h)}</div></li>`).join('')}</ol>` : '<p class="note">Nothing recorded yet.</p>'}
+      ${x.seasons.length ? `<p class="note">Earlier: ${x.seasons.map((s) => `${s.year} ${esc(s.division || '')}${s.team ? ` · ${esc(s.team)}` : ''}${s.record ? ` (${esc(s.record)})` : ''}`).join(' · ')}</p>` : ''}
+    </details>
+    <div class="row dlgfoot psfoot">
+      <button type="button" class="btn" data-go="${esc(prev || '')}" ${prev ? '' : 'disabled'} aria-label="Previous player">←</button>
+      <span class="sub">${i + 1} of ${order.length}</span>
+      <button type="button" class="btn" data-go="${esc(next || '')}" ${next ? '' : 'disabled'} aria-label="Next player">→</button>
+      <span class="spacer"></span>
+      ${can ? `<button type="submit" class="btn" value="save">Save</button>${next ? '<button type="submit" class="btn primary" value="next">Save &amp; next</button>' : ''}` : ''}
+      <button type="button" class="btn" data-close>Close</button>
+    </div></form>`, (dl) => {
+    const f = dl.querySelector('form');
+    dl.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => b.dataset.go && openSheet(b.dataset.go)));
+    dl.onkeydown = (e) => { if (e.target.tagName === 'TEXTAREA') return; if (e.key === 'ArrowLeft' && prev) openSheet(prev); if (e.key === 'ArrowRight' && next) openSheet(next); };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const go = e.submitter?.value === 'next';
+      const dec = f.querySelector('[name=decision]:checked')?.value, note = f.note?.value.trim() || '';
+      const body = { ...(dec && dec !== cur ? { decision: dec } : {}), ...(note ? { note } : {}) };
+      if (!Object.keys(body).length) return go ? openSheet(next) : toast('Nothing changed');
+      const r = await act('POST', A(`/players/${encodeURIComponent(id)}`), body);
+      if (r) go ? openSheet(next) : openSheet(id, r);
+    };
+  });
+  setTimeout(() => $('dlg').querySelector('textarea')?.focus(), 0);
+}
+$('reviewBtn').onclick = () => {
+  const order = sheetOrder(), first = order.find((pid) => !['Registered', ...OUT].includes(player(pid)?.status)) || order[0];
+  if (first) openSheet(first); else toast('No players yet');
+};
 
 /* ---------- setup (admin) ---------- */
 function renderSetup() {

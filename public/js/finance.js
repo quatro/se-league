@@ -60,6 +60,8 @@ function renderFinance() {
         ${seg('col', t.collected, 'Collected')}${seg('due', notDue, 'On plans, not yet due')}${seg('late', k.pastDue, 'Past due')}${seg('waived', k.waived, 'Waived')}</div>
       <div class="vlegend"><span><i class="sw fin-col"></i>Collected ${usd(t.collected)}</span><span><i class="sw fin-due"></i>Not yet due ${usd(notDue)}</span><span><i class="sw fin-late"></i>Past due ${usd(k.pastDue)}</span>${k.waived ? `<span><i class="sw fin-waived"></i>Waived ${usd(k.waived)}</span>` : ''}</div>
     </div>
+`;
+  $('finBreak').innerHTML = `
     <div class="grid3">
       <div><h3>By division</h3><table class="kt fintable">${d.byProgram.map((r) => `<tr><td>${esc(r.name)}<div class="sub">${r.players} players</div></td><td>${dataBar(r.cents, maxProg)}</td><td class="num">${usd(r.cents)}</td></tr>`).join('') || '<tr><td class="note">Nothing yet.</td></tr>'}</table></div>
       <div><h3>By fee</h3><table class="kt fintable">${d.byItem.map((r) => `<tr><td>${esc(r.name)}<div class="sub">${r.qty} sold</div></td><td>${dataBar(r.cents, maxItem)}</td><td class="num">${usd(r.cents)}</td></tr>`).join('') || '<tr><td class="note">Nothing yet.</td></tr>'}</table></div>
@@ -73,6 +75,7 @@ function renderFinance() {
     + `<div class="fintile small"><span>Due in the next 30 days</span><b>${usd(k.next30)}</b></div>`;
   const counts = { attention: ar.plans.filter((p) => ATTENTION.includes(p.state)).length, all: ar.plans.length,
     on_track: ar.plans.filter((p) => p.state === 'on_track').length, paid_off: ar.plans.filter((p) => p.state === 'paid_off').length };
+  $('finBadge').hidden = !counts.attention; $('finBadge').textContent = counts.attention;
   $('finFilters').innerHTML = [['attention', 'Needs attention'], ['all', 'All plans'], ['on_track', 'On track'], ['paid_off', 'Paid off']]
     .map(([v, l]) => `<button class="seg ${FS.filter === v ? 'on' : ''}" data-ffilter="${v}">${l} <span class="sub">${counts[v]}</span></button>`).join('');
   const q = FS.q.toLowerCase();
@@ -218,3 +221,13 @@ $('finRun').onclick = async () => {
   const r = await act('POST', '/api/admin/finance/run', {});
   if (r) { toast(`${r.charged} charged · ${r.failed} declined · ${r.reminded} reminders sent`); loadFinance(); }
 };
+
+/* Finance categories — same side navigation as Settings. */
+FS.pane = FS.pane || 'overview';
+function finPane(k) {
+  FS.pane = k;
+  document.querySelectorAll('#finNav [data-fin]').forEach((b) => b.setAttribute('aria-selected', b.dataset.fin === k));
+  document.querySelectorAll('#view-finance [data-finpane]').forEach((p) => (p.hidden = p.dataset.finpane !== k));
+}
+$('finNav').onclick = (e) => { const b = e.target.closest('[data-fin]'); if (b) finPane(b.dataset.fin); };
+finPane(FS.pane);

@@ -35,8 +35,8 @@ const toUtc = (d: string) => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.sli
 const fromUtc = (t: number) => new Date(t).toISOString().slice(0, 10)
 export const addDays = (d: string, n: number) => fromUtc(toUtc(d) + n * 864e5)
 export const daysBetween = (a: string, b: string) => Math.round((toUtc(b) - toUtc(a)) / 864e5)
-function addMonths(d: string, n: number) {
-  const y = +d.slice(0, 4), m = +d.slice(5, 7) - 1 + n, day = +d.slice(8, 10)
+function addMonths(d: string, n: number, dayOfMonth?: number) {
+  const y = +d.slice(0, 4), m = +d.slice(5, 7) - 1 + n, day = dayOfMonth ?? +d.slice(8, 10)
   const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate() // the 31st becomes the 30th (or the 28th)
   return fromUtc(Date.UTC(y, m, Math.min(day, last)))
 }
@@ -47,22 +47,33 @@ const money = (c: number) => `$${(c / 100).toFixed(c % 100 ? 2 : 0)}`
  * The payments for a plan: the first today, the rest monthly on the same day of the month —
  * or, when the months don't fit before the last-payment date, spaced evenly up to it.
  * Even split; any odd cents go on the first payment. Null when no plan fits.
+ * payDay: the day of the month the family picked for payments 2 onward (one a month, starting next month).
  */
-export function planSchedule(totalCents: number, n: number, finalDate: string | null, start = today()): { due: string; cents: number }[] | null {
+export function planSchedule(totalCents: number, n: number, finalDate: string | null, start = today(), payDay?: number): { due: string; cents: number }[] | null {
   if (!n || n < 2 || !finalDate || totalCents <= 0) return null
   const span = daysBetween(start, finalDate)
   if (span < 7 * (n - 1)) return null // less than a week between payments: too late for this plan
   const base = Math.floor(totalCents / n), first = totalCents - base * (n - 1)
   const monthly = addMonths(start, n - 1) <= finalDate
   const out = [{ due: start, cents: first }]
+  if (payDay && monthly) {
+    for (let k = 1; k < n; k++) out.push({ due: addMonths(start, k, payDay), cents: base })
+    return out[n - 1]!.due <= finalDate ? out : null
+  }
   for (let k = 1; k < n; k++) out.push({ due: monthly ? addMonths(start, k) : addDays(start, Math.round((span * k) / (n - 1))), cents: base })
   return out
 }
 
+/** The days of the month a family can pick for their payments (1–28, so every month has one), or [] when the plan isn't monthly. */
+export function payDays(n: number, finalDate: string | null, start = today()): number[] {
+  if (!n || n < 2 || !finalDate || addMonths(start, n - 1) > finalDate) return []
+  return Array.from({ length: 28 }, (_, i) => i + 1).filter((d) => addMonths(start, n - 1, d) <= finalDate)
+}
+
 /** The plan a family could choose for this total, if the campaign offers one. */
-export function planFor(c: PlanCampaign, totalCents: number, start = today()) {
+export function planFor(c: PlanCampaign, totalCents: number, start = today(), payDay?: number) {
   if (!c.plan_installments || totalCents < (c.plan_min_cents || 0)) return null
-  return planSchedule(totalCents, c.plan_installments, c.plan_final_date, start)
+  return planSchedule(totalCents, c.plan_installments, c.plan_final_date, start, payDay)
 }
 
 // ---------- collections history ----------

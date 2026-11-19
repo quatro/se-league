@@ -55,9 +55,10 @@ function render() {
   document.title = `${st.season.year} ${S.home?.league || 'League'}`;
   $('league').textContent = S.home?.league || 'SE Baseball';
   $('seasonTitle').textContent = `${st.season.year} Season${complete() ? ' (finished)' : ''}`;
-  $('seasonSel').innerHTML = st.seasons.slice().reverse().map((s) => `<option value="${esc(s.id)}" ${s.id === S.sid ? 'selected' : ''}>${s.year}${s.id === st.current ? ' · current' : s.status === 'complete' ? ' · finished' : ''}</option>`).join('');
+  $('seasonSel').innerHTML = st.seasons.slice().reverse().map((s) => `<option value="${esc(s.id)}" ${s.id === S.sid ? 'selected' : ''}>${s.year} Season${s.id === st.current ? ' · current' : s.status === 'complete' ? ' · finished' : ''}</option>`).join('');
   document.querySelectorAll('[data-admin]').forEach((el) => (el.hidden = !isAdmin()));
   document.querySelectorAll('[data-coach]').forEach((el) => (el.hidden = !isCoach()));
+  document.querySelectorAll('[data-owner]').forEach((el) => (el.hidden = !canEdit())); // league-wide pages: admins only, not the Board
   document.querySelector('[data-tab=coach]').textContent = isAdmin() ? 'Coach view' : 'My players';
   $('live').innerHTML = `<span class="chip ${S.live ? 'live' : 'off'}">${S.live ? 'Live' : 'Reconnecting'}</span>`;
   const hats = [canEdit() ? 'admin' : '', S.me.board && !canEdit() ? 'Board' : '', S.me.coachSeasons?.length ? 'coach' : ''].filter(Boolean);
@@ -72,10 +73,10 @@ function render() {
   // Admin tabs hold inputs; don't rebuild under someone's cursor. Re-render on blur instead.
   const ae = document.activeElement;
   const typing = ae?.closest?.('section') && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'checkbox' && ae.type !== 'file';
-  if (typing && ['kids', 'divisions', 'regs', 'seasons', 'campaigns'].includes(S.tab)) { S.pendingRender = true; return; }
+  if (typing && ['kids', 'divisions', 'settings', 'seasons', 'campaigns'].includes(S.tab)) { S.pendingRender = true; return; }
   if (S.tab === 'kids') renderKids();
   if (S.tab === 'divisions') renderDivisions();
-  if (S.tab === 'regs') renderRegs();
+  if (S.tab === 'settings') renderRegs();
   if (S.tab === 'seasons') renderSeasons();
   if (S.tab === 'log') renderLog();
   if (S.tab === 'users' && !US.loaded) loadUsers(); // users.js
@@ -83,7 +84,7 @@ function render() {
   if (S.tab === 'outreach' && OS.loadedFor !== S.sid) loadOutreach(); // outreach.js — reloads on tab open, not on every change, so a message being typed survives
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (S.pendingRender && !document.activeElement?.closest?.('section')) { S.pendingRender = false; render(); } }, 0));
-$('seasonSel').onchange = (e) => { S.sid = e.target.value; S.sel.clear(); try { localStorage.setItem('league-season', S.sid); } catch { /* private */ } refresh(); if (S.tab === 'log') loadLog(); };
+$('seasonSel').onchange = (e) => switchSeason(e.target.value);
 
 /* ---------- seats ---------- */
 const STATE = { open: ['good', 'Open'], closing: ['meh', 'Closing soon'], full: ['bad', 'Full'], over: ['bad', 'Over capacity'], closed: ['', 'Registration closed'], unset: ['', 'No teams set'] };
@@ -108,7 +109,7 @@ function renderSeats() {
     const soon = us.filter((u) => u.seats.state === 'closing');
     if (!us.length || us.every((u) => u.seats.state === 'unset')) {
       h.className = 'headline';
-      h.innerHTML = `<div class="big">No divisions set up yet</div><div class="meta">${isAdmin() ? 'Add divisions and team counts under <b>Seasons → Divisions &amp; teams</b>.' : 'Seat counts will appear here once the league sets up its divisions.'}</div>`;
+      h.innerHTML = `<div class="big">No divisions set up yet</div><div class="meta">${isAdmin() ? 'Add divisions and team counts under <b>Season → Divisions &amp; teams</b>.' : 'Seat counts will appear here once the league sets up its divisions.'}</div>`;
     } else if (act.length) {
       h.className = 'headline act';
       h.innerHTML = `<div class="big">Close registration: ${act.map((u) => esc(u.name)).join(', ')}</div>
@@ -120,44 +121,75 @@ function renderSeats() {
       h.className = 'headline';
       h.innerHTML = `<div class="big">Registration open — ${plural(st.total.open, 'seat')} left</div><div class="meta">No division is close to full.</div>`;
     }
-    if (st.total.held) h.insertAdjacentHTML('beforeend', st.total.registered
-      ? `<div class="meta"><b>${plural(st.total.held, 'seat')}</b> held for expected returners are placeholders until those kids register or drop out.</div>`
-      : `<div class="meta"><b>No one has registered yet.</b> The ${plural(st.total.held, 'seat')} held for expected returners are placeholders until those kids register or drop out.</div>`);
   }
 
+  renderSeatSummary(us);
+  renderDivRows(us);
+  loadAges();
+}
+
+/* One strip of league totals — each number appears once on the page. */
+function renderSeatSummary(us) {
+  const st = S.st, t = st.total, box = $('kpis');
+  const sum = (f) => us.reduce((a, u) => a + f(u.seats), 0);
+  const kpi = (n, label, sub = '', cls = '') => `<div class="kpi ${cls}"><b>${n}</b><span>${label}</span>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  if (complete()) { box.innerHTML = kpi(t.capacity, 'Seats') + kpi(sum((s) => s.registered), 'Played'); return; }
+  const ret = sum((s) => s.returnersRegistered), held = sum((s) => s.held), over = us.filter((u) => u.seats.open < 0);
+  box.innerHTML = kpi(t.capacity, 'Seats', `${plural(us.length, 'division')}`)
+    + kpi(t.registered + held, 'Expected to play', 'if every returner comes back')
+    + kpi(t.registered, 'Registered', `${ret} of ${ret + held} returners · ${ret + held ? Math.round(100 * ret / (ret + held)) : 0}%`)
+    + kpi(t.open, 'Seats open', over.length ? `<span class="bad-text">${plural(over.length, 'division')} over</span>` : 'for new families', over.length ? 'bad' : '')
+    + (st.unplaced && isAdmin() ? kpi(st.unplaced, 'Not in a division', 'need a home', 'warn') : '');
+}
+
+/* Divisions: one row each — the bar shows who holds the seats, the numbers say how many. */
+function renderDivRows(us) {
+  const warnAt = S.st.season.warn_at ?? 4, done = complete();
+  document.querySelector('.sdivpanel .vlegend').hidden = done;
   $('divs').innerHTML = us.map((u) => {
-    const s = u.seats, [cls, label] = STATE[s.state];
-    const base = Math.max(s.capacity, s.projected, 1), w = (n) => `${(100 * n / base).toFixed(2)}%`;
-    const flags = [];
-    if (s.atRisk) flags.push(`<span class="chip meh" title="Returners marked Need to contact still hold a seat">${s.atRisk} need contact · best case ${s.bestCaseOpen} open</span>`);
-    if (u.div && s.coachGap) flags.push(`<span class="chip bad">${plural(s.coachGap, 'team')} without a coach</span>`);
-    if (u.div && s.capacity && s.teamsNeeded > u.div.teams) flags.push(`<span class="chip bad">Projected ${s.projected} kids = ${s.teamsNeeded} teams</span>`);
-    if (s.waitlist) flags.push(`<span class="chip">${s.waitlist} waitlisted</span>`);
-    const mism = u.div ? u.div.ageMismatches : u.members.reduce((a, d) => a + (d.ageMismatches || 0), 0);
-    if (mism) flags.push(`<span class="chip meh">${plural(mism, 'kid')} outside the age range</span>`);
-    const exc = u.div ? u.div.ageExceptions : u.members.reduce((a, d) => a + (d.ageExceptions || 0), 0);
-    if (exc) flags.push(`<span class="chip" title="Pinned here by an admin as an age exception">${plural(exc, 'kid')} moved up by an admin</span>`);
+    const s = u.seats, r = done ? null : riskOf(s, warnAt);
+    const base = Math.max(s.capacity, s.projected, s.registered, 1), w = (n) => `${(100 * n / base).toFixed(2)}%`;
+    const seg = (cls, n, tip) => (n > 0 ? `<i class="${cls}" style="width:${w(n)}" data-tip="${esc(`${u.name}: ${tip}`)}"></i>` : '');
+    const notes = [];
+    const note = (cls, html) => notes.push(`<span class="${cls}">${html}</span>`);
+    if (!done) {
+      if (r && (r.rank === 1 || r.rank === 2)) note('warn', esc(r.why));
+      if (s.atRisk) note('warn', `${plural(s.atRisk, 'returner')} still need a call — best case ${s.bestCaseOpen} open`);
+      if (u.div && s.coachGap) note('bad', `${plural(s.coachGap, 'team')} without a coach`);
+      if (u.div && s.capacity && s.teamsNeeded > u.div.teams) note('bad', `${s.projected} kids would need ${s.teamsNeeded} teams (${u.div.teams} planned)`);
+      if (s.waitlist) note('', `${s.waitlist} on the waitlist`);
+      const mism = u.div ? u.div.ageMismatches : u.members.reduce((a, d) => a + (d.ageMismatches || 0), 0);
+      if (mism) note('warn', `${plural(mism, 'kid')} outside the age range`);
+      const exc = u.div ? u.div.ageExceptions : u.members.reduce((a, d) => a + (d.ageExceptions || 0), 0);
+      if (exc) note('', `${plural(exc, 'kid')} moved up by an admin`);
+    }
+    if (u.members) note('', u.members.map((d) => `${esc(d.name)} ${d.seats.registered + d.seats.held} of ${d.seats.capacity}`).join(' · '));
     const sub = u.div ? `${u.div.teams} teams × ${u.div.roster_size}${ageRange(u.div) ? ` · ${esc(ageRange(u.div))}` : ''}`
-      : `${u.members.map((d) => `${esc(d.name)} ${d.teams}×${d.roster_size}`).join(' · ')} · one registration, drafts decide`;
-    const members = u.members ? `<div class="sub">${u.members.map((d) => `<b>${esc(d.name)}</b>: ${d.seats.registered + d.seats.held} placed of ${d.seats.capacity}`).join(' · ')}</div>` : '';
-    return `<article class="div ${complete() ? 'closed' : s.state}">
-      <div class="top"><div><h3>${esc(u.name)}</h3><div class="sub">${sub}</div>
-        ${complete() ? '' : `<span class="chip ${cls}" style="margin-top:6px">${label}</span>`}</div>
-        <div class="open"><b>${complete() ? s.registered : s.capacity ? (s.open < 0 ? `+${-s.open}` : s.open) : '—'}</b><span>${complete() ? 'played' : s.open < 0 ? 'over' : 'seats open'}</span></div></div>
-      <div class="bar ${s.open < 0 ? 'over' : ''}" role="img" aria-label="${s.registered} registered, ${s.expected} returners expected, ${s.atRisk} need contact, of ${s.capacity} seats">
-        <i class="reg" style="width:${w(s.registered)}"></i><i class="exp" style="width:${w(s.expected)}"></i><i class="risk" style="width:${w(s.atRisk)}"></i></div>
-      <div class="nums">
-        <div><b>${s.capacity}</b><span>Seats</span></div>
-        <div><b>${s.registered}</b><span>Registered${s.registered ? ` (${s.returnersRegistered} ret · ${s.newRegistered} new)` : ''}</span></div>
-        <div title="Placeholders: expected returners who have not registered yet"><b>${s.held}</b><span>Held · expected returners</span></div>
+      : `${u.members.map((d) => `${esc(d.name)} ${d.teams}×${d.roster_size}`).join(' · ')} · drafts decide`;
+    const state = done ? 'done' : s.state;
+    const open = done ? [s.registered, 'played'] : !s.capacity ? ['—', 'no teams set'] : s.open < 0 ? [`+${-s.open}`, 'over'] : [s.open, s.state === 'full' ? 'full' : s.state === 'closing' ? 'left · closing' : s.state === 'closed' ? 'reg. closed' : 'open'];
+    const capAt = s.capacity ? 100 * s.capacity / base : 0;
+    return `<article class="srow ${state}">
+      <div class="sname"><h3>${esc(u.name)}</h3><div class="sub">${sub}</div></div>
+      <div class="sviz">
+        <div class="strack" role="img" aria-label="${esc(`${u.name}: ${s.registered} registered, ${s.held} returners expected, ${s.capacity} seats`)}">
+          ${s.capacity && base > s.capacity ? `<span class="overzone" style="left:${capAt.toFixed(2)}%"></span>` : ''}
+          ${done ? seg('ret', s.registered, `${s.registered} played`) : seg('ret', s.returnersRegistered, `${s.returnersRegistered} returners registered`) + seg('new', s.newRegistered, `${s.newRegistered} new kids registered`)}
+          ${done ? '' : seg('held', s.held - s.atRisk, `${s.held - s.atRisk} returners expected back, not registered yet`) + seg('risk', s.atRisk, `${s.atRisk} returners who still need a call`)}
+          ${s.capacity ? `<span class="cap" style="left:${capAt.toFixed(2)}%" data-tip="${esc(`${u.name}: ${s.capacity} seats`)}"></span>` : ''}
+        </div>
+        ${notes.length ? `<div class="snotes">${notes.join('')}</div>` : ''}
       </div>
-      ${members}${flags.length && !complete() ? `<div class="flags">${flags.join('')}</div>` : ''}
+      <dl class="snums">
+        <div><dt>Seats</dt><dd>${s.capacity}</dd></div>
+        ${done ? '' : `<div title="${s.returnersRegistered} returners · ${s.newRegistered} new"><dt>Registered</dt><dd>${s.registered}</dd></div>
+        <div title="Seats held for returners who haven't registered yet"><dt>Expected</dt><dd>${s.held}</dd></div>`}
+      </dl>
+      <div class="sopen"><b>${open[0]}</b><span>${open[1]}</span></div>
     </article>`;
   }).join('');
-  renderAva(us);
-  loadAges();
-  const t = st.total;
-  $('totals').innerHTML = `<span>League: <b>${t.capacity}</b> seats</span><span><b>${t.registered}</b> registered</span><span><b>${t.held}</b> held for expected returners</span><span><b>${t.open}</b> open</span>${st.unplaced && isAdmin() ? `<span class="warn-text">${st.unplaced} not in a division</span>` : ''}`;
+  $('divTable').innerHTML = `<tr><th>Division</th><th class="num">Seats</th><th class="num">Registered</th><th class="num">Returners registered</th><th class="num">New registered</th><th class="num">Returners expected</th><th class="num">Need a call</th><th class="num">Open</th></tr>
+    ${us.map(({ name, seats: s }) => `<tr><td>${esc(name)}</td><td class="num">${s.capacity}</td><td class="num">${s.registered}</td><td class="num">${s.returnersRegistered}</td><td class="num">${s.newRegistered}</td><td class="num">${s.held}</td><td class="num">${s.atRisk}</td><td class="num">${s.open}</td></tr>`).join('')}`;
 }
 
 /* ---------- anticipated vs actual, and where returners could get squeezed out ----------
@@ -181,56 +213,6 @@ function riskOf(s, warnAt) {
   if (s.newRegistered > signed && out > left) return { ...RISK.watch, why: `New sign-ups (${s.newRegistered}) are ahead of returners (${signed}); ${plural(out, 'returner')} still to come.` };
   return { ...RISK.ok, why: `${plural(left, 'seat')} open for new kids after every expected returner.` };
 }
-function renderAva(us) {
-  const box = $('ava');
-  if (complete() || !us.length) { box.hidden = true; return; }
-  const warnAt = S.st.season.warn_at ?? 4;
-  const rows = us.map((u) => ({ u, s: u.seats, r: riskOf(u.seats, warnAt) })).filter((x) => x.r)
-    .sort((a, b) => a.r.rank - b.r.rank || (a.s.capacity - a.s.registered - a.s.held) / a.s.capacity - (b.s.capacity - b.s.registered - b.s.held) / b.s.capacity);
-  if (!rows.length) { box.hidden = true; return; }
-  box.hidden = false;
-  const scale = Math.max(...rows.map(({ s }) => Math.max(s.capacity, s.projected, s.registered + s.waitlist)), 1);
-  const pct = (n) => `${(100 * n / scale).toFixed(2)}%`;
-  const ticks = niceTicks(scale).filter((t) => t <= scale);
-  const tot = rows.reduce((a, { s }) => ({ cap: a.cap + s.capacity, ant: a.ant + s.projected, act: a.act + s.registered, ret: a.ret + s.returnersRegistered, out: a.out + s.held }), { cap: 0, ant: 0, act: 0, ret: 0, out: 0 });
-  const seg = (cls, n, tip) => (n > 0 ? `<i class="${cls}" style="width:${pct(n)}" data-tip="${esc(tip)}"></i>` : '');
-  const bar = (kind, u, s) => {
-    const name = u.name;
-    const inner = kind === 'ant'
-      ? seg('ret', s.returnersRegistered, `${name}: ${s.returnersRegistered} returners registered`) + seg('new', s.newRegistered, `${name}: ${s.newRegistered} new kids registered`)
-        + seg('held', s.held, `${name}: ${s.held} returners expected but not registered${s.atRisk ? ` (${s.atRisk} need contact)` : ''}`)
-      : seg('ret', s.returnersRegistered, `${name}: ${s.returnersRegistered} returners registered`) + seg('new', s.newRegistered, `${name}: ${s.newRegistered} new kids registered`)
-        + seg('wait', s.waitlist, `${name}: ${s.waitlist} on the waitlist`);
-    const n = kind === 'ant' ? s.projected : s.registered;
-    return `<div class="avrow"><span class="avlbl">${kind === 'ant' ? 'Anticipated' : 'Actual'}</span>
-      <div class="avtrack">${inner}<span class="cap" style="left:${pct(s.capacity)}" title="${s.capacity} seats"></span></div>
-      <span class="avnum">${n}${kind === 'act' && s.waitlist ? ` <span class="sub">+${s.waitlist} wait</span>` : ''}</span></div>`;
-  };
-  const top = rows.filter(({ r }) => r.rank < 2);
-  box.innerHTML = `<div class="hd"><h2>Anticipated vs actual</h2>
-      <div class="vlegend"><span><i class="sw yr1"></i>Returners registered</span><span><i class="sw yr2"></i>New kids registered</span><span><i class="sw heldsw"></i>Returners expected, not registered</span><span><i class="capsw"></i>Seats</span></div></div>
-    <div class="bd">
-      <div class="avsum">
-        <div><b>${tot.ant}</b><span>Anticipated<br><span class="sub">assuming returners come back</span></span></div>
-        <div><b>${tot.act}</b><span>Actual<br><span class="sub">registered so far</span></span></div>
-        <div><b>${tot.cap}</b><span>Seats</span></div>
-        <div><b>${tot.ret + tot.out ? Math.round(100 * tot.ret / (tot.ret + tot.out)) : 0}%</b><span>Returners signed up<br><span class="sub">${tot.ret} of ${tot.ret + tot.out}</span></span></div>
-      </div>
-      ${top.length ? `<div class="avalert"><b>Greatest risk:</b> ${top.map(({ u, r }) => `<span class="risk ${r.cls}"><span aria-hidden="true">${r.icon}</span> ${esc(u.name)}</span> ${esc(r.why)}`).join('<br>')}</div>` : '<div class="avalert ok"><b>No division at risk.</b> Every division has room for its expected returners.</div>'}
-      <div class="avchart">
-        <div class="avaxis" aria-hidden="true">${ticks.map((t) => `<span style="left:${pct(t)}">${t}</span>`).join('')}</div>
-        ${rows.map(({ u, s, r }) => `<div class="avdiv" role="img" aria-label="${esc(`${u.name}: anticipated ${s.projected}, actual ${s.registered}, ${s.capacity} seats. ${r.label}: ${r.why}`)}">
-          <div class="avhead"><b>${esc(u.name)}</b><span class="risk ${r.cls}"><span aria-hidden="true">${r.icon}</span> ${r.label}</span><span class="sub">${esc(r.why)}</span></div>
-          ${bar('ant', u, s)}${bar('act', u, s)}
-        </div>`).join('')}
-      </div>
-      <details><summary class="note">Show as a table</summary><div class="scroll"><table class="kt">
-        <tr><th>League</th><th class="num">Seats</th><th class="num">Anticipated</th><th class="num">Actual</th><th class="num">Returners registered</th><th class="num">New registered</th><th class="num">Returners still to sign up</th><th class="num">Open for new kids</th><th>Risk</th></tr>
-        ${rows.map(({ u, s, r }) => `<tr><td>${esc(u.name)}</td><td class="num">${s.capacity}</td><td class="num">${s.projected}</td><td class="num">${s.registered}</td><td class="num">${s.returnersRegistered}</td><td class="num">${s.newRegistered}</td><td class="num">${s.held}</td><td class="num">${s.capacity - s.registered - s.held}</td><td>${r.label}</td></tr>`).join('')}
-      </table></div></details>
-    </div>`;
-}
-
 /* ---------- drafts ---------- */
 /* ---------- ages: kids per age year over year, and what each division is made of ---------- */
 const AG = { sid: null, at: 0, data: null, busy: false };
@@ -312,7 +294,7 @@ document.addEventListener('mousemove', (e) => {
 
 function renderDrafts() {
   const st = S.st;
-  if (!st.drafts.length) { $('draftCards').innerHTML = `<p class="note">No draft rooms for ${st.season.year}.${isAdmin() ? ' Set one up per division under <b>Seasons → Divisions &amp; teams</b>.' : ''}</p>`; return; }
+  if (!st.drafts.length) { $('draftCards').innerHTML = `<p class="note">No draft rooms for ${st.season.year}.${isAdmin() ? ' Set one up per division under <b>Season → Divisions &amp; teams</b>.' : ''}</p>`; return; }
   $('draftCards').innerHTML = st.drafts.map((r) => {
     const d = div(r.division_id), prev = st.drafts.find((x) => x.next_id === r.id), next = r.next_id && draftOf(r.next_id);
     const waiting = r.status === 'open' && prev && prev.status !== 'closed';
@@ -513,7 +495,7 @@ function editPlayer(k) {
     </fieldset>
     ${dfld(`Notes for ${st.season.year}`, `<textarea name="notes" rows="2">${esc(k.notes || '')}</textarea>`)}
     ${k.bought?.length ? `<p class="sub" style="margin:0">Bought at registration: ${esc(k.bought.join(' · '))}</p>` : ''}
-    <div class="row dlgfoot"><button class="btn primary" type="submit">Save</button><button class="btn" data-close>Cancel</button><button class="linkbtn" type="button" data-hist>Full history &amp; parents</button><span class="spacer"></span><button class="btn danger" type="button" data-del>Remove from ${st.season.year}</button></div>
+    <div class="row dlgfoot"><button class="btn primary" type="submit">Save</button><button class="btn" data-close>Cancel</button><button class="linkbtn" type="button" data-hist>Full history &amp; parents</button>${canEdit() ? '<button class="linkbtn" type="button" data-email>Email parents</button>' : ''}<span class="spacer"></span><button class="btn danger" type="button" data-del>Remove from ${st.season.year}</button></div>
   </form>`, (dl) => {
     const f = dl.querySelector('form'), el = (n) => f.elements[n];
     f.onsubmit = async (e) => {
@@ -530,6 +512,7 @@ function editPlayer(k) {
       if (await act('PATCH', `/api/admin/enrollments/${encodeURIComponent(k.id)}`, b, 'Saved')) dl.close();
     };
     f.querySelector('[data-hist]').onclick = () => { dl.close(); showKid(k.kid_id); };
+    const em = f.querySelector('[data-email]'); if (em) em.onclick = () => { dl.close(); emailParents(k.kid_id); };
     const del = f.querySelector('[data-del]');
     del.onclick = async () => {
       if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = 'Click again to remove'; return; }
@@ -776,16 +759,37 @@ $('warnAt').onchange = (e) => act('PATCH', `/api/admin/seasons/${encodeURICompon
 
 /* ---------- seasons ---------- */
 let rollPreview = null;
+const STATUS_LABEL = { planning: 'Planning', active: 'Playing', complete: 'Finished' };
+/** Pick a season from anywhere (title switcher, All seasons list): everything on every page follows it. */
+async function switchSeason(id) {
+  if (!id || id === S.sid) return;
+  S.sid = id; S.sel.clear(); try { localStorage.setItem('league-season', S.sid); } catch { /* private */ }
+  await refresh();
+  if (S.tab === 'log') loadLog();
+}
 async function renderSeasons() {
-  const st = S.st;
-  $('seasonTable').innerHTML = '<tr><th>Season</th><th>Status</th><th></th><th></th></tr>' + st.seasons.slice().reverse().map((s) => `<tr data-s="${esc(s.id)}">
-    <td><b>${s.year}</b></td>
-    <td><select data-status aria-label="Status"><option value="planning" ${s.status === 'planning' ? 'selected' : ''}>Planning</option><option value="active" ${s.status === 'active' ? 'selected' : ''}>Playing</option><option value="complete" ${s.status === 'complete' ? 'selected' : ''}>Finished</option></select></td>
-    <td>${s.id === st.current ? '<span class="chip good">Current</span>' : `<button class="mini" data-cur>Make current</button>`}</td>
-    <td class="seasonacts"><button class="btn" data-players>Players</button><button class="btn" data-divs>Divisions &amp; teams</button></td></tr>`).join('');
+  const st = S.st, ks = st.kids || [];
+  // The selected season's home: its people, its setup, and finishing it.
+  const reg = ks.filter((k) => k.status === 'Registered').length, said = ks.filter((k) => k.status === 'Expected' && k.intent === 'yes').length;
+  const exp = ks.filter((k) => ['Expected', 'Need to contact'].includes(k.status)).length;
+  const ts = st.teams.filter((t) => st.divisions.some((d) => d.id === t.division_id)), todo = ts.filter(coachTodo).length;
+  $('shTitle').textContent = `${st.season.year} season`;
+  $('shSub').textContent = st.season.id === st.current ? 'The current season — registration, seats and drafts run on it.' : st.season.status === 'complete' ? 'Finished — kept for history and last-season records.' : 'Not the current season.';
+  $('shStatus').innerHTML = `<label class="row" style="gap:6px"><span class="sub">Status</span><select id="shStat" aria-label="Season status">${Object.entries(STATUS_LABEL).map(([v, l]) => `<option value="${v}" ${st.season.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
+    + (st.season.id === st.current ? '<span class="chip good">Current</span>' : '<button class="btn" id="shCur">Make current</button>');
+  $('shCards').innerHTML = `
+    <button class="shcard" data-open="kids"><span class="shk">Players</span>
+      <b>${reg}</b><span>${st.season.status === 'complete' ? 'played' : 'registered'}</span>
+      <span class="sub">${said ? `${said} said they’re coming back · ` : ''}${exp ? `${exp} expected` : st.season.status === 'complete' ? '' : 'nobody expected yet'}</span><span class="shgo">Open players →</span></button>
+    <button class="shcard" data-open="divisions"><span class="shk">Divisions &amp; teams</span>
+      <b>${st.divisions.length}</b><span>divisions · ${st.divisions.reduce((a, d) => a + d.teams, 0)} teams · ${st.divisions.reduce((a, d) => a + d.seats.capacity, 0)} seats</span>
+      <span class="sub ${todo ? 'needtxt' : ''}">${todo ? `${todo} ${todo === 1 ? 'team needs' : 'teams need'} coach info` : ts.length ? '✓ Every team has a coach' : 'No teams yet'}</span><span class="shgo">Open divisions &amp; teams →</span></button>`;
+  $('seasonTable').innerHTML = '<tr><th>Season</th><th>Status</th><th></th></tr>' + st.seasons.slice().reverse().map((s) => `<tr data-s="${esc(s.id)}" class="${s.id === S.sid ? 'sel' : ''}">
+    <td><b>${s.year}</b>${s.id === st.current ? ' <span class="chip good">Current</span>' : ''}</td><td>${STATUS_LABEL[s.status] || esc(s.status)}</td>
+    <td>${s.id === S.sid ? '<span class="sub">Showing</span>' : '<button class="mini" data-open-season>Open</button>'}</td></tr>`).join('');
   const next = st.seasons.find((s) => s.year === st.season.year + 1);
   $('rollTitle').textContent = `Finish ${st.season.year} → start ${st.season.year + 1}`;
-  if (next) { $('rollBox').innerHTML = `<p>${st.season.year + 1} already exists. Kids added to ${st.season.year} rosters later (Seasons → Divisions &amp; teams → Import rosters) are carried into it automatically.</p>`; return; }
+  if (next) { $('rollBox').innerHTML = `<p>${st.season.year + 1} already exists. Kids added to ${st.season.year} rosters later (Season → Divisions &amp; teams → Import rosters) are carried into it automatically.</p>`; return; }
   if (rollPreview?.from !== S.sid) { rollPreview = { from: S.sid, loading: true }; rollPreview = await call('GET', `/api/admin/seasons/${encodeURIComponent(S.sid)}/rollover`).catch(() => null); }
   const p = rollPreview;
   if (!p || p.loading) { $('rollBox').innerHTML = '<p class="note">Loading…</p>'; return; }
@@ -800,24 +804,51 @@ async function renderSeasons() {
     if (r) { S.sid = r.to; rollPreview = null; try { localStorage.setItem('league-season', S.sid); } catch { /* private */ } refresh(); }
   };
 }
-$('seasonTable').onchange = (e) => { const tr = e.target.closest('[data-s]'); if (tr && e.target.matches('[data-status]')) act('PATCH', `/api/admin/seasons/${encodeURIComponent(tr.dataset.s)}`, { status: e.target.value }, 'Saved'); };
-$('seasonTable').onclick = async (e) => {
-  const tr = e.target.closest('[data-s]'); if (!tr) return;
-  if (e.target.matches('[data-cur]')) act('POST', `/api/admin/seasons/${encodeURIComponent(tr.dataset.s)}/current`, {}, `${tr.dataset.s} is now the current season`);
-  // A season's players and its divisions & teams open from here (no top-level tabs): switch to that season, then show them.
-  const to = e.target.matches('[data-divs]') ? 'divisions' : e.target.matches('[data-players]') ? 'kids' : null;
-  if (to) {
-    if (S.sid !== tr.dataset.s) { S.sid = tr.dataset.s; S.sel.clear(); try { localStorage.setItem('league-season', S.sid); } catch { /* private */ } await refresh(); }
-    setTab(to);
-  }
-};
+$('view-seasons').addEventListener('change', (e) => { if (e.target.id === 'shStat') act('PATCH', `/api/admin/seasons/${encodeURIComponent(S.sid)}`, { status: e.target.value }, 'Saved'); });
+$('view-seasons').addEventListener('click', async (e) => {
+  if (e.target.closest('#shCur')) return act('POST', `/api/admin/seasons/${encodeURIComponent(S.sid)}/current`, {}, `${S.st.season.year} is now the current season`);
+  const card = e.target.closest('[data-open]'); if (card) return setTab(card.dataset.open);
+  const tr = e.target.closest('[data-s]');
+  if (tr && e.target.closest('[data-open-season]')) { await switchSeason(tr.dataset.s); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+});
 document.querySelectorAll('[data-back-seasons]').forEach((b) => (b.onclick = () => setTab('seasons')));
 $('addSeason').onclick = async () => {
   const y = parseInt($('newYear').value, 10); if (!y) return toast('Enter a year', true);
   if (await act('POST', '/api/admin/seasons', { year: y }, `${y} added`)) { S.sid = String(y); $('newYear').value = ''; refresh(); }
 };
 
-/* ---------- registrations ---------- */
+/* ---------- settings (league-wide; admins only) ---------- */
+S.setPane = S.setPane || 'general';
+function setPane(k) {
+  S.setPane = k;
+  document.querySelectorAll('#setNav [data-set]').forEach((b) => b.setAttribute('aria-selected', b.dataset.set === k));
+  document.querySelectorAll('#view-settings [data-pane]').forEach((p) => (p.hidden = p.dataset.pane !== k));
+}
+$('setNav').onclick = (e) => { const b = e.target.closest('[data-set]'); if (b) setPane(b.dataset.set); };
+async function loadSettings() {
+  setPane(S.setPane);
+  const c = await call('GET', '/api/admin/settings').catch((e) => { toast(e.message, true); return null; });
+  if (!c) return;
+  const row = (k, v, ok) => `<div class="setrow"><span class="setk">${k}</span><span>${ok === undefined ? '' : `<i class="dot ${ok ? 'Registered' : 'Need'}"></i> `}${v}</span></div>`;
+  const foot = '<p class="note">These come from the server’s settings file; changing one needs a restart.</p>';
+  $('setGeneral').innerHTML = row('League name', esc(c.league)) + row('Site address', `<code>${esc(c.baseUrl)}</code>`) + row('Time zone', esc(c.timeZone))
+    + '<p class="note">Seasons, divisions and teams are set up per season under <b>Season</b>.</p>' + foot;
+  $('setEmail').innerHTML = row('Sending', c.mail.on ? 'On (Resend)' : 'Off — nothing is emailed', c.mail.on)
+    + (c.mail.on ? row('From', `<code>${esc(c.mail.from)}</code>`) + row('Replies go to', esc(c.mail.replyTo || 'the From address')) : '')
+    + row('What gets emailed', 'Sign-in links · registration receipts and payment reminders · waitlist offers · coach notices · outreach and interest checks') + foot;
+  $('setPay').innerHTML = row('Stripe', c.stripe.on ? (c.stripe.mode === 'live' ? '<b>Live</b> — real cards are charged' : 'Test mode — no real money moves') : 'Off', c.stripe.on)
+    + (c.stripe.on ? row('Webhook', `<code>${esc(c.stripe.webhook)}</code>`) + row('Webhook signing', c.stripe.webhookSigned ? 'On' : '<span class="warn-text">No signing secret — payments won’t confirm</span>', c.stripe.webhookSigned) : '')
+    + '<p class="note">Payment plans, refunds and what each family owes are under <b>Finance</b> for the season.</p>' + foot;
+  $('setSignin').innerHTML = row('How people sign in', 'An emailed link — no passwords. Only people listed under <b>Users</b> can sign in.')
+    + row('Can send links to others', c.linkSenders.length ? c.linkSenders.map(esc).join(', ') : 'Nobody (server command only)')
+    + row('Admins', 'See and change everything, including Users, Settings and Activity.')
+    + row('Board of Directors', 'See every season page; change nothing. No Users, Settings or Activity.')
+    + row('Coaches', 'Their own team’s page, from being named on a team (Season → Divisions &amp; teams).')
+    + `<div class="row" style="margin-top:12px"><button class="btn" data-goto="users">Manage users →</button></div>` + foot;
+}
+$('setSignin').addEventListener('click', (e) => { if (e.target.closest('[data-goto]')) setTab('users'); });
+
+/* ---------- SportsEngine deliveries (on Settings) ---------- */
 const OUTCOME_CHIP = { placed: 'good', returner: 'good', withdrawn: 'meh', no_division: 'bad', ambiguous: 'bad', error: 'bad', pending: 'meh', wrong_year: '', ignored: '' };
 const LABELS = { placed: 'New kid placed', returner: 'Returner', withdrawn: 'Withdrawn', no_division: 'No division', ambiguous: 'Ambiguous', error: 'Error', pending: 'Pending', wrong_year: 'Other season', ignored: 'Ignored' };
 async function loadRegs() {
@@ -826,7 +857,8 @@ async function loadRegs() {
   S.regs = d;
   const open = ['no_division', 'ambiguous', 'error', 'pending'].reduce((a, k) => a + (d.counts[k] || 0), 0);
   $('regBadge').hidden = !open; $('regBadge').textContent = open;
-  if (S.tab === 'regs') renderRegs();
+  $('seBadge').hidden = !open; $('seBadge').textContent = open;
+  if (S.tab === 'settings') renderRegs();
 }
 function renderRegs() {
   const d = S.regs; if (!d) return;
@@ -894,17 +926,17 @@ $('logRefresh').onclick = loadLog;
 $('logTable').onclick = (e) => { const kb = e.target.closest('[data-kid]'); if (kb) showKid(kb.dataset.kid); };
 
 /* ---------- tabs ---------- */
-const VIEWS = ['seats', 'drafts', 'coach', 'kids', 'campaigns', 'finance', 'outreach', 'regs', 'divisions', 'seasons', 'users', 'log'];
+const VIEWS = ['seats', 'drafts', 'coach', 'kids', 'campaigns', 'finance', 'outreach', 'settings', 'divisions', 'seasons', 'users', 'log'];
 function setTab(t) {
   // Divisions & teams has no tab of its own: it opens from Seasons, which stays highlighted.
   const UNDER_SEASONS = ['divisions', 'kids'];
   const btn = document.querySelector(`[data-tab="${UNDER_SEASONS.includes(t) ? 'seasons' : t}"]`);
-  if (!btn || (btn.hasAttribute('data-admin') && !isAdmin()) || (btn.hasAttribute('data-coach') && !isCoach())) t = 'seats';
+  if (!btn || (btn.hasAttribute('data-admin') && !isAdmin()) || (btn.hasAttribute('data-owner') && !canEdit()) || (btn.hasAttribute('data-coach') && !isCoach())) t = 'seats';
   S.tab = t;
   document.querySelectorAll('#tabs button').forEach((x) => x.setAttribute('aria-selected', x.dataset.tab === (UNDER_SEASONS.includes(t) ? 'seasons' : t)));
   VIEWS.forEach((v) => ($('view-' + v).hidden = v !== t));
   try { localStorage.setItem('league-tab', t); } catch { /* private mode */ }
-  if (t === 'regs') loadRegs();
+  if (t === 'settings') { loadRegs(); loadSettings(); }
   if (t === 'log') loadLog();
   if (t === 'outreach') OS.loadedFor = null;
   if (t === 'users') US.loaded = false;
@@ -920,7 +952,7 @@ async function refresh() {
   try {
     S.st = await call('GET', `/api/seasons/${encodeURIComponent(S.sid)}/state`);
     render();
-    if (isAdmin() && S.tab !== 'regs') loadRegs(); // keep the inbox badge current
+    if (canEdit() && S.tab !== 'settings') loadRegs(); // keep the Settings badge (SportsEngine deliveries to sort out) current
   } catch (e) { toast(e.message, true); }
 }
 let refreshTimer;

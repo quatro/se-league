@@ -101,7 +101,7 @@ function renderCampaigns() {
         <div class="rh-url"><a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(fullUrl.replace(/^https?:\/\//, ''))}</a><button class="mini" data-act="copyurl" data-url="${esc(fullUrl)}">Copy link</button></div>
       </div>
       <div class="rh-actions">
-        <button class="btn primary big" data-act="status" data-to="${primary[0]}">${primary[1]}</button>
+        <button class="btn big ${primary[0] === 'open' ? 'go' : 'stop'}" data-act="status" data-to="${primary[0]}"><span aria-hidden="true">${primary[0] === 'open' ? '▶' : '■'}</span> ${primary[1]}</button>
         <a class="btn" href="${esc(d.url)}" target="_blank" rel="noopener">${c.status === 'draft' ? 'Preview the form' : 'View the form'} ↗</a>
       </div>
     </div>
@@ -466,7 +466,7 @@ function statusDialog(to) {
       ${d.stripe === 'test' ? '<p class="warn-text">Stripe is still in test mode — families can’t actually pay until the league switches to live keys.</p>' : ''}
       ${!d.offerings.some((o) => o.reg_mode !== 'closed') ? '<p class="err-text">No divisions are open yet.</p>' : ''}`
       : '<p>Families will see that registration is closed. Waitlist offers you’ve already sent keep working.</p>'}
-    <div class="row dlgfoot"><button class="btn primary" type="submit">${opening ? 'Open registration' : 'Close registration'}</button><button class="btn" data-close>Cancel</button></div></form>`, (dl) => {
+    <div class="row dlgfoot"><button class="btn ${opening ? 'go' : 'stop'}" type="submit">${opening ? 'Open registration' : 'Close registration'}</button><button class="btn" data-close>Cancel</button></div></form>`, (dl) => {
     dl.querySelector('form').onsubmit = async (e) => {
       e.preventDefault();
       if (await act('PATCH', CA(), { name: c.name, status: to }, opening ? 'Registration is open' : 'Registration closed')) { dl.close(); loadCampaigns(); }
